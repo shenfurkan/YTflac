@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .core.models import TrackMetadata, DownloadResult
 from .core.progress import DownloadManager, ProgressCallback
-from .core.errors import SpotiflacError
+from .core.errors import SpotiflacError, classify_error, friendly_label
 from .core.console import print_track_header, print_source_banner, print_summary, print_api_failure, print_quality_fallback
 from .core.provider_stats import record_success, record_failure, prioritize
 from .core.history import HistoryManager
@@ -23,6 +23,37 @@ logger = logging.getLogger(__name__)
 
 # Initialize debug modules
 _history_manager = HistoryManager()
+
+
+# ---------------------------------------------------------------------------
+# Failure log — written to a separate, user-shareable file
+# ---------------------------------------------------------------------------
+
+def _failure_log_path() -> str:
+    return os.path.join(os.getcwd(), "ytflac_failures.log")
+
+
+def _log_failure(metadata: "TrackMetadata", per_provider_errors: dict[str, str]) -> None:
+    """Append a detailed failure block to ytflac_failures.log."""
+    try:
+        from datetime import datetime
+        path = _failure_log_path()
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("=" * 80 + "\n")
+            f.write(f"[{datetime.now().isoformat(timespec='seconds')}] FAILED\n")
+            f.write(f"Track   : {metadata.title}\n")
+            f.write(f"Artist  : {metadata.artists}\n")
+            f.write(f"Album   : {metadata.album}\n")
+            f.write(f"ISRC    : {metadata.isrc or '-'}\n")
+            f.write(f"ID      : {metadata.id}\n")
+            f.write("Providers tried:\n")
+            for prov, err in per_provider_errors.items():
+                kind = classify_error(err)
+                f.write(f"  - {prov:<10} [{kind.name}] {err}\n")
+            f.write("\n")
+    except Exception:
+        # Logging errors must never break the download pipeline
+        pass
 
 
 @dataclass
@@ -162,7 +193,15 @@ def download_one(
             file_path=""
         )
 
-    summary = "; ".join(f"{k}: {v}" for k, v in errors.items())
+    summary_parts = []
+    for prov, err in errors.items():
+        kind = classify_error(err)
+        summary_parts.append(f"{prov} [{kind.name}]: {err}")
+    summary = " || ".join(summary_parts)
+
+    # Persistent, user-shareable failure log
+    _log_failure(metadata, errors)
+
     return DownloadResult.fail("none", f"All providers failed — {summary}")
 
 

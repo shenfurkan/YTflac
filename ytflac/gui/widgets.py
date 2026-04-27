@@ -148,12 +148,14 @@ class Spinner(QWidget):
 
 class TrackRow(QFrame):
     toggled = pyqtSignal(int, bool)  # index, checked
+    failure_clicked = pyqtSignal(int)  # 1-based index — emitted when user clicks the failed status
 
     def __init__(self, index: int, track, parent=None):
         super().__init__(parent)
         self.setObjectName("row")
         self._index = index
         self._track = track
+        self._error_msg: str = ""
         self.setFixedHeight(58)
 
         # Cached searchable text
@@ -262,6 +264,9 @@ class TrackRow(QFrame):
             return True
         return needle in self._search_blob
 
+    def error_message(self) -> str:
+        return self._error_msg
+
     def set_status(self, status: str, tooltip: str = ""):
         glyph, color = _STATUS_GLYPH.get(status, _STATUS_GLYPH[STATUS_IDLE])
         if status == STATUS_RUNNING:
@@ -275,10 +280,32 @@ class TrackRow(QFrame):
                 f"color: {color}; font-size: 14px; background: transparent; border: none;"
             )
             self._status_lbl.show()
-        if tooltip:
-            self._status_wrap.setToolTip(tooltip)
+
+        # Track failure detail
+        if status == STATUS_FAILED:
+            self._error_msg = tooltip or ""
+            self._status_wrap.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._status_wrap.setToolTip("Click for details")
         else:
-            self._status_wrap.setToolTip("")
+            self._error_msg = ""
+            self._status_wrap.setCursor(Qt.CursorShape.ArrowCursor)
+            if tooltip:
+                self._status_wrap.setToolTip(tooltip)
+            else:
+                self._status_wrap.setToolTip("")
+
+    # Clicking the failed status icon → emit signal
+    def mousePressEvent(self, ev):
+        # Only respond when this row has a failure to show
+        if self._error_msg:
+            try:
+                pos = ev.position().toPoint()
+            except AttributeError:
+                pos = ev.pos()
+            if self._status_wrap.geometry().contains(pos):
+                self.failure_clicked.emit(self._index)
+                return
+        super().mousePressEvent(ev)
 
     # --- Internals -------------------------------------------------------
 
