@@ -604,15 +604,26 @@ def resolve_youtube_playlist(
     if not video_ids:
         raise ValueError("No tracks found in YouTube Music playlist")
 
+    # Resolve all videos concurrently while preserving original ordering.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _resolve(vid: str):
+        try:
+            return resolve_spotify_from_yt(vid, spotify_client, http)
+        except Exception as exc:
+            logger.warning("[youtube_input] Video %s resolve crashed: %s", vid, exc)
+            return None, _YouTubeTrackContext(video_id=vid)
+
+    max_workers = min(8, len(video_ids))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        results = list(pool.map(_resolve, video_ids))
+
     tracks: list[TrackMetadata] = []
     unmatched: list[str] = []
-
-    for vid in video_ids:
-        metadata, ctx = resolve_spotify_from_yt(vid, spotify_client, http)
+    for vid, (metadata, ctx) in zip(video_ids, results):
         if metadata is None:
             if len(unmatched) < MAX_UNMATCHED_SAMPLES:
-                display = ctx.raw_title or vid
-                unmatched.append(display)
+                unmatched.append(ctx.raw_title or vid)
             continue
         tracks.append(metadata)
 

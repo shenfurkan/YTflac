@@ -5,10 +5,13 @@ from __future__ import annotations
 import base64
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator
 from urllib.parse import urlparse, parse_qs
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from ..core.errors import AuthError, NetworkError, InvalidUrlError, SpotiflacError, ErrorKind
 from ..core.models import TrackMetadata
@@ -62,6 +65,22 @@ class SpotifyMetadataClient:
         self._token      = ""
         self._token_exp  = 0.0
 
+        # Connection pooling + automatic retry on transient failures
+        retry = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=(500, 502, 503, 504),
+            allowed_methods=frozenset(("GET", "POST")),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(
+            pool_connections=20,
+            pool_maxsize=20,
+            max_retries=retry,
+        )
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
+
     def _ensure_token(self) -> str:
         if self._token and time.time() < self._token_exp - 60:
             return self._token
@@ -103,7 +122,7 @@ class SpotifyMetadataClient:
             raise NetworkError("spotify", f"HTTP {resp.status_code} from {path}")
         return resp.json()
 
-    def _paginate(self, url: str, delay: float = 0.5) -> Iterator[dict]:
+    def _paginate(self, url: str, delay: float = 0.0) -> Iterator[dict]:
         while url:
             data  = self._get(url.replace(f"{_API_BASE}/", ""))
             items = data.get("items", [])
@@ -118,20 +137,34 @@ class SpotifyMetadataClient:
 
     def get_album_tracks(self, album_id: str) -> tuple[dict, list[TrackMetadata]]:
         album = self._get(f"/albums/{album_id}")
-        tracks: list[TrackMetadata] = []
 
-        for item in self._paginate(f"{_API_BASE}/albums/{album_id}/tracks?limit=50"):
-            track_id = item["id"]
-            isrc = get_cached_isrc(track_id)
-            if not isrc:
-                try:
-                    full = self._get(f"/tracks/{track_id}")
-                    isrc = full.get("external_ids", {}).get("isrc", "")
-                    if isrc:
-                        put_cached_isrc(track_id, isrc)
-                except Exception:
+        items = list(self._paginate(f"{_API_BASE}/albums/{album_id}/tracks?limit=50"))
+
+        # Resolve uncached ISRCs concurrently to cut album resolve time drastically.
+        missing_ids = [
+            it["id"] for it in items
+            if it.get("id") and not get_cached_isrc(it["id"])
+        ]
+
+        def _fetch_isrc(tid: str) -> tuple[str, str]:
+            try:
+                full = self._get(f"/tracks/{tid}")
+                isrc = full.get("external_ids", {}).get("isrc", "")
+                if isrc:
+                    put_cached_isrc(tid, isrc)
+                return tid, isrc
+            except Exception:
+                return tid, ""
+
+        if missing_ids:
+            with ThreadPoolExecutor(max_workers=min(8, len(missing_ids))) as pool:
+                for _ in pool.map(_fetch_isrc, missing_ids):
                     pass
 
+        tracks: list[TrackMetadata] = []
+        for item in items:
+            tid = item.get("id", "")
+            isrc = get_cached_isrc(tid) if tid else ""
             tracks.append(self._track_from_album_item(item, album, isrc))
 
         return album, tracks

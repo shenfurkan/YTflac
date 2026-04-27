@@ -7,7 +7,6 @@ import sys
 import traceback
 from datetime import datetime
 
-import subprocess
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
@@ -495,6 +494,15 @@ class SpotiflacApp(QMainWindow):
 
     def closeEvent(self, ev):
         self._settings.setValue("window_geometry", self.saveGeometry())
+        # Wait for any running worker threads so the process doesn't get killed mid-IO
+        for w in (self._resolve_worker, self._dl_worker):
+            try:
+                if w is not None and w.isRunning():
+                    w.requestInterruption()
+                    w.quit()
+                    w.wait(3000)
+            except Exception:
+                pass
         super().closeEvent(ev)
 
 
