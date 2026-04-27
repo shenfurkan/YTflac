@@ -1,1 +1,1 @@
-from SpotiFLAC import *
+"""YtFLAC — alias package."""

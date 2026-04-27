@@ -4,9 +4,12 @@ YtFLAC Desktop — minimalist PyQt6 GUI.
 from __future__ import annotations
 import os
 import sys
+import traceback
+from datetime import datetime
 
 import subprocess
 from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QScrollArea, QFileDialog,
@@ -27,11 +30,37 @@ from . import style as S
 SERVICES_ALL = ["tidal", "qobuz", "amazon", "deezer"]
 
 
+def _resource_path(*parts: str) -> str:
+    """Resolve a bundled resource path for both dev and PyInstaller onefile."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base is None:
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return os.path.join(base, *parts)
+
+
+def _log_crash(exc_type, exc_value, exc_tb):
+    try:
+        log_path = os.path.join(os.getcwd(), "ytflac_crash.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("\n" + "=" * 80 + "\n")
+            f.write(f"[{datetime.now().isoformat()}] Unhandled exception\n")
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+    except Exception:
+        pass
+
+
 class SpotiflacApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YtFLAC")
         self.setMinimumSize(480, 560)
+
+        # App icon
+        icon_path = _resource_path("images", "ytflaclogo.ico")
+        if not os.path.exists(icon_path):
+            icon_path = _resource_path("images", "ytflaclogo.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self._settings = QSettings("YtFLAC", "Desktop")
 
@@ -61,6 +90,14 @@ class SpotiflacApp(QMainWindow):
         outer.setSpacing(12)
 
         # ============ HEADER STRIP ============
+        # Logo
+        logo_path = _resource_path("images", "ytflaclogo.png")
+        logo_lbl = QLabel()
+        if os.path.exists(logo_path):
+            px = QPixmap(logo_path).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            logo_lbl.setPixmap(px)
+        logo_lbl.setFixedSize(36, 36)
+
         title = QLabel("YtFLAC")
         title.setObjectName("h1")
         sub = QLabel("Spotify · YouTube Music  →  FLAC / MP3")
@@ -76,6 +113,7 @@ class SpotiflacApp(QMainWindow):
         self._settings_btn.clicked.connect(self._open_settings)
 
         head = QHBoxLayout()
+        head.addWidget(logo_lbl)
         head.addLayout(head_text, stretch=1)
         head.addWidget(self._settings_btn, alignment=Qt.AlignmentFlag.AlignTop)
         outer.addLayout(head)
@@ -445,13 +483,15 @@ class SpotiflacApp(QMainWindow):
 
     def _restore_geometry(self):
         geo = self._settings.value("window_geometry")
+        restored = False
         if geo:
             try:
-                self.restoreGeometry(geo)
-                return
+                restored = bool(self.restoreGeometry(geo))
             except Exception:
-                pass
-        self.resize(560, 660)
+                restored = False
+        if not restored:
+            self.resize(560, 660)
+        self.setWindowState(Qt.WindowState.WindowNoState)
 
     def closeEvent(self, ev):
         self._settings.setValue("window_geometry", self.saveGeometry())
@@ -461,9 +501,30 @@ class SpotiflacApp(QMainWindow):
 # ---------------------------------------------------------------------------
 
 def run():
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    app.setStyleSheet(S.QSS)
-    win = SpotiflacApp()
-    win.show()
-    sys.exit(app.exec())
+    # Windows taskbar icon fix
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("YtFLAC")
+
+    sys.excepthook = _log_crash
+
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        app.setStyleSheet(S.QSS)
+
+        icon_path = _resource_path("images", "ytflaclogo.ico")
+        if not os.path.exists(icon_path):
+            icon_path = _resource_path("images", "ytflaclogo.png")
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+
+        win = SpotiflacApp()
+        win.show()
+        win.showNormal()
+        win.raise_()
+        win.activateWindow()
+        sys.exit(app.exec())
+    except Exception:
+        _log_crash(*sys.exc_info())
+        raise

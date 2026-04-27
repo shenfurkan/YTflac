@@ -46,8 +46,7 @@ QLabel {{
 QLabel#h1 {{
     font-size: 22px;
     font-weight: 600;
-    color: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-        stop:0 {ACCENT}, stop:1 {ACCENT_HOV});
+    color: {TEXT};
     letter-spacing: -0.5px;
 }}
 QLabel#h2 {{
