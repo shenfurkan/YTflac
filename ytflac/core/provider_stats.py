@@ -10,6 +10,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from .errors import ErrorKind
+
 
 @dataclass
 class _ProviderStats:
@@ -38,6 +40,13 @@ class _ProviderStats:
         return float(base)
 
 
+@dataclass
+class _CircuitState:
+    consecutive_failures: int = 0
+    opened_until: float = 0.0
+    last_kind: ErrorKind | None = None
+
+
 class ProviderScorer:
     """
     Singleton thread-safe che traccia successi/fallimenti per API URL.
@@ -52,6 +61,7 @@ class ProviderScorer:
                 inst = super().__new__(cls)
                 inst._stats: dict[str, _ProviderStats] = {}
                 inst._stats_lock = threading.Lock()
+                inst._circuit: dict[str, _CircuitState] = {}
                 cls._instance = inst
         return cls._instance
 
@@ -88,6 +98,53 @@ class ProviderScorer:
         """Utile per i test."""
         with self._stats_lock:
             self._stats.clear()
+            self._circuit.clear()
+
+    # ------------------------------------------------------------------
+    # Provider-level circuit breaker (across tracks)
+    # ------------------------------------------------------------------
+
+    def record_provider_success(self, provider_type: str) -> None:
+        with self._stats_lock:
+            c = self._circuit.setdefault(provider_type, _CircuitState())
+            c.consecutive_failures = 0
+            c.opened_until = 0.0
+            c.last_kind = None
+
+    def record_provider_failure(self, provider_type: str, kind: ErrorKind) -> None:
+        now = time.time()
+        with self._stats_lock:
+            c = self._circuit.setdefault(provider_type, _CircuitState())
+            c.last_kind = kind
+            c.consecutive_failures += 1
+
+            # Immediate opens for clearly non-transient failures
+            if kind == ErrorKind.AUTH_FAILED:
+                c.opened_until = max(c.opened_until, now + 300)  # 5 min
+                return
+            if kind == ErrorKind.RATE_LIMITED:
+                c.opened_until = max(c.opened_until, now + 120)  # 2 min
+                return
+
+            # Network/unavailable failures: open only after repeated failures
+            if kind in {ErrorKind.NETWORK_ERROR, ErrorKind.UNAVAILABLE} and c.consecutive_failures >= 3:
+                c.opened_until = max(c.opened_until, now + 90)  # 1.5 min
+                return
+
+            # Parsing failures tend to be persistent until update
+            if kind == ErrorKind.PARSE_ERROR and c.consecutive_failures >= 2:
+                c.opened_until = max(c.opened_until, now + 180)  # 3 min
+
+    def provider_cooldown_remaining(self, provider_type: str) -> int:
+        with self._stats_lock:
+            c = self._circuit.get(provider_type)
+            if not c:
+                return 0
+            remaining = int(c.opened_until - time.time())
+            return remaining if remaining > 0 else 0
+
+    def is_provider_open(self, provider_type: str) -> bool:
+        return self.provider_cooldown_remaining(provider_type) <= 0
 
 
 # Singleton globale — usato dai provider
@@ -104,6 +161,22 @@ def record_failure(provider_type: str, api_url: str) -> None:
 
 def prioritize(provider_type: str, api_urls: list[str]) -> list[str]:
     return _scorer.prioritize(provider_type, api_urls)
+
+
+def record_provider_success(provider_type: str) -> None:
+    _scorer.record_provider_success(provider_type)
+
+
+def record_provider_failure(provider_type: str, kind: ErrorKind) -> None:
+    _scorer.record_provider_failure(provider_type, kind)
+
+
+def provider_cooldown_remaining(provider_type: str) -> int:
+    return _scorer.provider_cooldown_remaining(provider_type)
+
+
+def is_provider_open(provider_type: str) -> bool:
+    return _scorer.is_provider_open(provider_type)
 
 # Alias per compatibilità con i provider
 prioritize_providers = prioritize

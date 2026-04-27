@@ -4,16 +4,27 @@ Downloader — orchestratore principale.
 from __future__ import annotations
 import logging
 import os
+import random
 import re
 import time
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .core.models import TrackMetadata, DownloadResult
 from .core.progress import DownloadManager, ProgressCallback
-from .core.errors import SpotiflacError, classify_error, friendly_label
+from .core.errors import ErrorKind, SpotiflacError, classify_error
 from .core.console import print_track_header, print_source_banner, print_summary, print_api_failure, print_quality_fallback
-from .core.provider_stats import record_success, record_failure, prioritize
+from .core.provider_stats import (
+    is_provider_open,
+    prioritize,
+    provider_cooldown_remaining,
+    record_failure,
+    record_provider_failure,
+    record_provider_success,
+    record_success,
+)
+
 from .core.history import HistoryManager
 from .core.isrc_cache import get_cached_isrc, put_cached_isrc
 from .providers.base import BaseProvider
@@ -54,6 +65,57 @@ def _log_failure(metadata: "TrackMetadata", per_provider_errors: dict[str, str])
     except Exception:
         # Logging errors must never break the download pipeline
         pass
+
+
+def _retryable_provider_failure(kind: ErrorKind) -> bool:
+    return kind in {ErrorKind.NETWORK_ERROR, ErrorKind.RATE_LIMITED, ErrorKind.UNAVAILABLE}
+
+
+def _provider_retry_cap(kind: ErrorKind) -> int:
+    # Keep retries conservative: avoid hammering unstable endpoints.
+    if kind == ErrorKind.RATE_LIMITED:
+        return 3
+    if kind == ErrorKind.NETWORK_ERROR:
+        return 2
+    if kind == ErrorKind.UNAVAILABLE:
+        return 2
+    return 1
+
+
+def _retry_sleep_seconds(attempt: int) -> float:
+    # Exponential backoff with jitter.
+    base = min(6.0, 0.8 * (2 ** (attempt - 1)))
+    jitter = random.uniform(0.0, 0.6)
+    return base + jitter
+
+
+def _order_providers_for_track(providers: list[BaseProvider]) -> list[BaseProvider]:
+    """
+    Order providers by observed fallback success while honoring circuit breaker.
+    Open providers are tried first; providers in cooldown are pushed to the end.
+    """
+    if not providers:
+        return []
+
+    by_name: dict[str, BaseProvider] = {}
+    names: list[str] = []
+    for p in providers:
+        if p.name not in by_name:
+            by_name[p.name] = p
+            names.append(p.name)
+
+    ranked_names = prioritize("provider_fallback", names)
+
+    open_names: list[str] = []
+    cooling_names: list[str] = []
+    for name in ranked_names:
+        if is_provider_open(name):
+            open_names.append(name)
+        else:
+            cooling_names.append(name)
+
+    ordered_names = open_names + cooling_names
+    return [by_name[n] for n in ordered_names if n in by_name]
 
 
 @dataclass
@@ -133,65 +195,91 @@ def download_one(
         if not metadata.isrc:
             metadata = metadata.model_copy(update={"isrc": cached_isrc})
 
-    for provider in providers:
+    for provider in _order_providers_for_track(providers):
+        if not is_provider_open(provider.name):
+            cooldown = provider_cooldown_remaining(provider.name)
+            msg = f"circuit open ({cooldown}s cooldown remaining)"
+            errors[provider.name] = msg
+            logger.info("[%s] Skipped for %s — %s: %s", provider.name, metadata.artists, metadata.title, msg)
+            continue
+
         logger.info("[%s] Trying: %s — %s", provider.name, metadata.artists, metadata.title)
 
         cb = ProgressCallback(item_id=metadata.id)
         provider.set_progress_callback(cb)
 
-        result = provider.download_track(
-            metadata,
-            output_dir,
-            filename_format     = opts.filename_format,
-            position            = position,
-            include_track_num   = opts.use_track_numbers,
-            use_album_track_num = opts.use_album_track_numbers,
-            first_artist_only   = opts.first_artist_only,
-            allow_fallback      = opts.allow_fallback,
-            quality             = opts.quality,
-            embed_lyrics            = opts.embed_lyrics,
-            lyrics_providers        = opts.lyrics_providers,
-            lyrics_spotify_token    = opts.lyrics_spotify_token,
-            enrich_metadata         = opts.enrich_metadata,
-            enrich_providers        = opts.enrich_providers,
-        )
+        attempt = 1
+        max_attempts = 1
+        while attempt <= max_attempts:
+            result = provider.download_track(
+                metadata,
+                output_dir,
+                filename_format     = opts.filename_format,
+                position            = position,
+                include_track_num   = opts.use_track_numbers,
+                use_album_track_num = opts.use_album_track_numbers,
+                first_artist_only   = opts.first_artist_only,
+                allow_fallback      = opts.allow_fallback,
+                quality             = opts.quality,
+                embed_lyrics            = opts.embed_lyrics,
+                lyrics_providers        = opts.lyrics_providers,
+                lyrics_spotify_token    = opts.lyrics_spotify_token,
+                enrich_metadata         = opts.enrich_metadata,
+                enrich_providers        = opts.enrich_providers,
+            )
 
-        if result.success:
-            logger.info("[%s] ✓ %s — %s", provider.name, metadata.artists, metadata.title)
-            # Record provider success for stats
-            record_success(provider.name, getattr(provider, '_last_api_url', 'unknown'))
-            
-            # Add to history
+            if result.success:
+                logger.info("[%s] ✓ %s — %s", provider.name, metadata.artists, metadata.title)
+                record_success(provider.name, getattr(provider, "_last_api_url", "unknown"))
+                record_success("provider_fallback", provider.name)
+                record_provider_success(provider.name)
+
+                _history_manager.add_download(
+                    track_id=metadata.id,
+                    track_name=metadata.title,
+                    artist_name=metadata.artists,
+                    provider=provider.name,
+                    success=True,
+                    file_path=result.file_path,
+                )
+
+                if metadata.isrc:
+                    put_cached_isrc(metadata.id, metadata.isrc)
+                return result
+
+            err = result.error or "unknown error"
+            kind = classify_error(err)
+            errors[provider.name] = err
+            logger.warning("[%s] ✗ %s", provider.name, err)
+
+            record_failure(provider.name, getattr(provider, "_last_api_url", "unknown"))
+            record_failure("provider_fallback", provider.name)
+            record_provider_failure(provider.name, kind)
+
+            max_attempts = _provider_retry_cap(kind)
+            if _retryable_provider_failure(kind) and attempt < max_attempts:
+                sleep_s = _retry_sleep_seconds(attempt)
+                logger.info(
+                    "[%s] retrying (%s) attempt %d/%d in %.1fs",
+                    provider.name,
+                    kind.name,
+                    attempt + 1,
+                    max_attempts,
+                    sleep_s,
+                )
+                time.sleep(sleep_s)
+                attempt += 1
+                continue
+
             _history_manager.add_download(
                 track_id=metadata.id,
                 track_name=metadata.title,
                 artist_name=metadata.artists,
                 provider=provider.name,
-                success=True,
-                file_path=result.file_path
+                success=False,
+                file_path="",
             )
-            
-            # Update ISRC cache
-            if metadata.isrc:
-                put_cached_isrc(metadata.id, metadata.isrc)
-            
-            return result
-
-        errors[provider.name] = result.error or "unknown error"
-        logger.warning("[%s] ✗ %s", provider.name, result.error)
-        
-        # Record provider failure for stats
-        record_failure(provider.name, getattr(provider, '_last_api_url', 'unknown'))
-        
-        # Add failed download to history
-        _history_manager.add_download(
-            track_id=metadata.id,
-            track_name=metadata.title,
-            artist_name=metadata.artists,
-            provider=provider.name,
-            success=False,
-            file_path=""
-        )
+            break
 
     summary_parts = []
     for prov, err in errors.items():
