@@ -4,6 +4,7 @@ QThread workers — resolve URL + download tracks without blocking the UI.
 from __future__ import annotations
 import os
 import re
+import time
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -51,6 +52,7 @@ class DownloadWorker(QThread):
       track_done(index, title)
       track_failed(index, title, error)
       progress(current, total, title)        # legacy aggregate
+      progress_speed(current, total, title, speed_mbps, eta_seconds)  # new with speed
       finished(succeeded, failed)
       error(msg)                             # fatal worker error
     """
@@ -59,6 +61,7 @@ class DownloadWorker(QThread):
     track_failed  = pyqtSignal(int, str, str)
 
     progress = pyqtSignal(int, int, str)
+    progress_speed = pyqtSignal(int, int, str, float, float)  # current, total, title, speed_mbps, eta_seconds
     cooldown = pyqtSignal(int, int)   # remaining_seconds, total_seconds
     finished = pyqtSignal(int, int)
     error    = pyqtSignal(str)
@@ -78,6 +81,7 @@ class DownloadWorker(QThread):
         self._selected = list(selected_indices)
         self._cooldown_every   = max(0, int(cooldown_every))
         self._cooldown_seconds = max(0, int(cooldown_seconds))
+        self._start_time = 0.0
 
     def run(self):
         try:
@@ -100,6 +104,7 @@ class DownloadWorker(QThread):
             total     = len(self._selected)
             succeeded = 0
             failed    = 0
+            self._start_time = time.time()
 
             cd_every = self._cooldown_every
             cd_secs  = self._cooldown_seconds
@@ -113,6 +118,17 @@ class DownloadWorker(QThread):
                 track = self._tracks[idx]
                 self.track_started.emit(idx, track.title)
                 self.progress.emit(done_count, total, track.title)
+
+                # Calculate speed and ETA
+                elapsed = time.time() - self._start_time
+                speed_mbps = 0.0
+                eta_seconds = 0.0
+                if done_count > 1 and elapsed > 0:
+                    tracks_per_sec = done_count / elapsed
+                    speed_mbps = 0.0  # Could be calculated if we track bytes downloaded
+                    remaining = total - done_count
+                    eta_seconds = remaining / tracks_per_sec if tracks_per_sec > 0 else 0.0
+                self.progress_speed.emit(done_count, total, track.title, speed_mbps, eta_seconds)
 
                 try:
                     result = download_one(track, base, providers, self._opts, idx + 1)

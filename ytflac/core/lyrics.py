@@ -11,8 +11,13 @@ Ordine di tentativo (configurabile):
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import threading
+import time
 import urllib.parse
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -31,6 +36,114 @@ _UA = (
 
 # Aggiunto Apple Music e messo in priorità
 _DEFAULT_PROVIDERS = ["spotify", "apple", "musixmatch", "amazon", "lrclib"]
+
+# Cache settings
+_CACHE_TTL_S = 24 * 60 * 60  # 24 hours
+_CACHE_FILE = os.path.expanduser("~/.cache/ytflac/lyrics_cache.json")
+_MAX_CACHE_ENTRIES = 5000
+
+
+# --------------------------------------------------------------------------- #
+# Cache Implementation                                                        #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class _CacheEntry:
+    lyrics: str
+    provider: str
+    expires_at: float
+
+    def is_expired(self) -> bool:
+        return time.monotonic() > self.expires_at
+
+
+class _LyricsCache:
+    def __init__(self):
+        self._cache: dict[str, _CacheEntry] = {}
+        self._lock = threading.Lock()
+        self._load_from_disk()
+
+    def _get_cache_key(self, track_id: str, isrc: str, track_name: str, artist_name: str) -> str:
+        """Generate a cache key from available identifiers."""
+        if track_id:
+            return f"track_id:{track_id}"
+        if isrc:
+            return f"isrc:{isrc}"
+        # Fallback to name-based key
+        return f"name:{track_name.lower().strip()}|{artist_name.lower().strip()}"
+
+    def get(self, track_id: str, isrc: str, track_name: str, artist_name: str) -> tuple[str, str] | None:
+        key = self._get_cache_key(track_id, isrc, track_name, artist_name)
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry and not entry.is_expired():
+                logger.debug("[lyrics/cache] cache hit for %s", key)
+                return entry.lyrics, entry.provider
+            elif entry:
+                # Remove expired entry
+                del self._cache[key]
+                self._save_to_disk()
+        return None
+
+    def set(self, track_id: str, isrc: str, track_name: str, artist_name: str, lyrics: str, provider: str) -> None:
+        if not lyrics or not lyrics.strip():
+            return
+        key = self._get_cache_key(track_id, isrc, track_name, artist_name)
+        expires_at = time.monotonic() + _CACHE_TTL_S
+        with self._lock:
+            self._cache[key] = _CacheEntry(lyrics, provider, expires_at)
+            # Trim cache if too large
+            if len(self._cache) > _MAX_CACHE_ENTRIES:
+                # Remove oldest entries (simple FIFO)
+                keys_to_remove = list(self._cache.keys())[:len(self._cache) - _MAX_CACHE_ENTRIES]
+                for k in keys_to_remove:
+                    del self._cache[k]
+            self._save_to_disk()
+        logger.debug("[lyrics/cache] cached %s from %s", key, provider)
+
+    def _load_from_disk(self) -> None:
+        try:
+            cache_dir = os.path.dirname(_CACHE_FILE)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+            if os.path.exists(_CACHE_FILE):
+                with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    now = time.monotonic()
+                    for key, value in data.items():
+                        expires_at = value.get("expires_at", 0)
+                        if expires_at > now:
+                            self._cache[key] = _CacheEntry(
+                                value["lyrics"],
+                                value["provider"],
+                                expires_at
+                            )
+                logger.debug("[lyrics/cache] loaded %d entries from disk", len(self._cache))
+        except Exception as exc:
+            logger.warning("[lyrics/cache] failed to load from disk: %s", exc)
+
+    def _save_to_disk(self) -> None:
+        try:
+            cache_dir = os.path.dirname(_CACHE_FILE)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+            data = {
+                key: {
+                    "lyrics": entry.lyrics,
+                    "provider": entry.provider,
+                    "expires_at": entry.expires_at
+                }
+                for key, entry in self._cache.items()
+                if not entry.is_expired()
+            }
+            with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("[lyrics/cache] failed to save to disk: %s", exc)
+
+
+# Global cache instance
+_lyrics_cache = _LyricsCache()
 
 
 # --------------------------------------------------------------------------- #
@@ -300,6 +413,12 @@ def fetch_lyrics(
         providers:        list[str] | None = None,
         spotify_token:    str  = "",
 ) -> tuple[str, str]:
+    # Check cache first
+    cached = _lyrics_cache.get(track_id, isrc, track_name, artist_name)
+    if cached:
+        logger.debug("[lyrics] cache hit for '%s' by '%s'", track_name, artist_name)
+        return cached
+
     if providers is None:
         providers = _DEFAULT_PROVIDERS
 
@@ -323,6 +442,8 @@ def fetch_lyrics(
 
         if result and result.strip():
             logger.debug("[lyrics] found via %s (%d chars)", provider, len(result))
+            # Cache the result
+            _lyrics_cache.set(track_id, isrc, track_name, artist_name, result.strip(), provider)
             return result.strip(), provider
 
     logger.debug("[lyrics] not found for '%s' by '%s'", track_name, artist_name)

@@ -9,7 +9,7 @@
 #define MyAppIcon      "images\ytflaclogo.ico"
 
 [Setup]
-AppId={{A3F7C2D1-84BE-4E9A-B6C5-123456789ABC}
+AppId={{8B5F3D2A-7C4E-4A9F-9B1D-6E8F4A2C7D3B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}

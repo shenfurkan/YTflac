@@ -38,7 +38,8 @@ dependencies = [
     "mutagen>=1.47.0",
     "pyotp>=2.9.0",
     "pydantic>=2.7.0",
-    "cryptography>=42.0.0"
+    "cryptography>=42.0.0",
+    "yt-dlp>=2024.0.0"
 ]
 
 [project.optional-dependencies]

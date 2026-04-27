@@ -5,14 +5,16 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+import logging
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QScrollArea, QFileDialog,
     QStackedWidget, QMessageBox, QSizePolicy, QComboBox, QDialog,
+    QProgressBar, QFrame,
 )
 
 from ..providers.spotify_metadata import SpotifyMetadataClient
@@ -48,11 +50,79 @@ def _log_crash(exc_type, exc_value, exc_tb):
         pass
 
 
+def _setup_debug_logging():
+    """Setup detailed debug logging on startup."""
+    debug_log_path = os.path.join(os.getcwd(), "ytflac_debug.log")
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    
+    # File handler for debug log
+    file_handler = logging.FileHandler(debug_log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] [%(name)s:%(lineno)d] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    file_handler.setFormatter(file_formatter)
+    
+    # Console handler for errors only
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
+    console_handler.setFormatter(console_formatter)
+    
+    # Remove existing handlers
+    root_logger.handlers.clear()
+    
+    # Add handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # Log startup info
+    logging.info("=" * 60)
+    logging.info("YtFLAC GUI Starting")
+    logging.info(f"Python version: {sys.version}")
+    logging.info(f"Working directory: {os.getcwd()}")
+    logging.info(f"Debug log: {debug_log_path}")
+    logging.info("=" * 60)
+    
+    # Log debug module status
+    try:
+        from ..core.progress import DownloadManager
+        dm = DownloadManager()
+        logging.info("✓ DownloadManager initialized")
+    except Exception as e:
+        logging.warning(f"✗ DownloadManager failed: {e}")
+    
+    try:
+        from ..core.provider_stats import ProviderScorer
+        ps = ProviderScorer()
+        logging.info("✓ ProviderScorer initialized")
+    except Exception as e:
+        logging.warning(f"✗ ProviderScorer failed: {e}")
+    
+    try:
+        from ..core.history import HistoryManager
+        hm = HistoryManager()
+        stats = hm.get_stats()
+        logging.info(f"✓ HistoryManager initialized (total downloads: {stats.get('total', 0)})")
+    except Exception as e:
+        logging.warning(f"✗ HistoryManager failed: {e}")
+    
+    try:
+        from ..core.isrc_cache import get_cached_isrc, put_cached_isrc
+        logging.info("✓ ISRC cache functions loaded")
+    except Exception as e:
+        logging.warning(f"✗ ISRC cache failed: {e}")
+
+
 class SpotiflacApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YtFLAC")
-        self.setMinimumSize(480, 560)
+        self.setMinimumSize(720, 620)
 
         # App icon
         icon_path = _resource_path("images", "ytflaclogo.ico")
@@ -69,6 +139,14 @@ class SpotiflacApp(QMainWindow):
         self._result = None
         self._rows: list[TrackRow] = []
         self._selected: set[int] = set()
+        self._header: PlaylistHeader | None = None
+        self._is_downloading = False
+
+        # Debounced search
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self._apply_search_filter)
 
         self._output_dir = self._settings.value(
             "output_dir", os.path.expanduser("~/Music/YtFLAC"), type=str
@@ -134,20 +212,15 @@ class SpotiflacApp(QMainWindow):
         col.setSpacing(14)
         col.setContentsMargins(0, 0, 0, 0)
 
-        # Fixed width container for the whole left side
-        # achieved via a wrapper widget
-        # (we set the wrapper's max width)
-        # Simpler: set max widths on individual widgets — done below.
-
         # --- URL ---
         self._url_input = QLineEdit()
         self._url_input.setPlaceholderText("Spotify or YouTube Music URL")
         self._url_input.returnPressed.connect(self._on_preview)
-        self._url_input.setMinimumWidth(280)
+        self._url_input.setMinimumWidth(260)
         self._url_input.setMaximumWidth(360)
 
         self._preview_btn = QPushButton("Preview")
-        self._preview_btn.setFixedWidth(86)
+        self._preview_btn.setMinimumWidth(92)
         self._preview_btn.clicked.connect(self._on_preview)
 
         url_row = QHBoxLayout()
@@ -163,14 +236,16 @@ class SpotiflacApp(QMainWindow):
         self._fmt_combo.addItems(["FLAC", "MP3"])
         saved_fmt = self._settings.value("format", "FLAC", type=str)
         self._fmt_combo.setCurrentText(saved_fmt)
-        self._fmt_combo.currentTextChanged.connect(
-            lambda v: self._settings.setValue("format", v)
-        )
+        self._fmt_combo.currentTextChanged.connect(self._on_format_changed)
 
         qual_lbl = QLabel("Quality")
         qual_lbl.setObjectName("section")
         self._qual_combo = QComboBox()
         self._qual_combo.addItems(["LOSSLESS", "HI_RES", "HIGH", "NORMAL"])
+        self._qual_combo.setItemData(0, "16-bit / 44.1 kHz FLAC", Qt.ItemDataRole.ToolTipRole)
+        self._qual_combo.setItemData(1, "24-bit / up to 192 kHz", Qt.ItemDataRole.ToolTipRole)
+        self._qual_combo.setItemData(2, "320 kbps lossy",          Qt.ItemDataRole.ToolTipRole)
+        self._qual_combo.setItemData(3, "128 kbps lossy",          Qt.ItemDataRole.ToolTipRole)
         saved_qual = self._settings.value("quality", "LOSSLESS", type=str)
         self._qual_combo.setCurrentText(saved_qual)
         self._qual_combo.currentTextChanged.connect(
@@ -187,7 +262,18 @@ class SpotiflacApp(QMainWindow):
         fq_grid.addLayout(qual_box, stretch=1)
         col.addLayout(fq_grid)
 
+        # Apply initial smart-disable for quality combo
+        self._on_format_changed(saved_fmt)
+
         col.addStretch(1)
+
+        # --- Progress bar (hidden until download starts) ---
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setVisible(False)
+        col.addWidget(self._progress_bar)
 
         # --- Status + actions (bottom) ---
         self._status_lbl = QLabel("")
@@ -201,15 +287,30 @@ class SpotiflacApp(QMainWindow):
         self._dl_btn.setEnabled(False)
         self._dl_btn.clicked.connect(self._on_download)
 
+        self._stop_btn = QPushButton("Stop")
+        self._stop_btn.setObjectName("danger")
+        self._stop_btn.setFixedHeight(42)
+        self._stop_btn.setFixedWidth(80)
+        self._stop_btn.setVisible(False)
+        self._stop_btn.clicked.connect(self._on_stop)
+
         action_row = QHBoxLayout()
         action_row.setSpacing(6)
         action_row.addWidget(self._dl_btn, stretch=1)
+        action_row.addWidget(self._stop_btn)
         col.addLayout(action_row)
 
-        # Lock left column width
-        for w in (self._url_input,):
-            pass  # handled above
         return col
+
+    def _on_format_changed(self, fmt: str):
+        self._settings.setValue("format", fmt)
+        is_flac = (fmt or "").upper() == "FLAC"
+        # Quality combo only meaningful for FLAC providers
+        self._qual_combo.setEnabled(is_flac)
+        if not is_flac:
+            self._qual_combo.setToolTip("Quality is fixed for MP3 (320 kbps)")
+        else:
+            self._qual_combo.setToolTip("")
 
     # ------------------------------------------------------------------
     # Right column — preview / results
@@ -222,11 +323,46 @@ class SpotiflacApp(QMainWindow):
 
         self._stack = QStackedWidget()
 
-        # Page 0 — empty
-        empty = QLabel("Paste a URL and click Preview.")
-        empty.setObjectName("faint")
-        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._stack.addWidget(empty)
+        # Page 0 — empty / illustrated state
+        empty_page = QWidget()
+        ev = QVBoxLayout(empty_page)
+        ev.setContentsMargins(0, 0, 0, 0)
+        ev.addStretch(1)
+
+        empty_card = QFrame()
+        empty_card.setObjectName("empty_card")
+        empty_card.setMinimumHeight(220)
+        ec = QVBoxLayout(empty_card)
+        ec.setContentsMargins(24, 24, 24, 24)
+        ec.setSpacing(10)
+        ec.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        title_lbl = QLabel("Paste a URL to begin")
+        title_lbl.setObjectName("h2")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ec.addWidget(title_lbl)
+
+        hint_lbl = QLabel(
+            "Spotify · YouTube Music\n"
+            "track · album · playlist"
+        )
+        hint_lbl.setObjectName("muted")
+        hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ec.addWidget(hint_lbl)
+
+        # Service badges
+        svc_row = QHBoxLayout()
+        svc_row.setSpacing(6)
+        svc_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for svc in ("tidal", "qobuz", "deezer", "amazon"):
+            b = QLabel(svc)
+            b.setObjectName("badge")
+            svc_row.addWidget(b)
+        ec.addLayout(svc_row)
+
+        ev.addWidget(empty_card)
+        ev.addStretch(2)
+        self._stack.addWidget(empty_page)
 
         # Page 1 — results
         results_page = QWidget()
@@ -238,12 +374,20 @@ class SpotiflacApp(QMainWindow):
         self._header_box.setContentsMargins(0, 0, 0, 0)
         rl.addLayout(self._header_box)
 
-        # Select-all toggle row
+        # Search + select-all toggle row
+        self._search_input = QLineEdit()
+        self._search_input.setObjectName("search")
+        self._search_input.setPlaceholderText("🔎  Filter tracks…")
+        self._search_input.textChanged.connect(self._on_search_changed)
+        self._search_input.setClearButtonEnabled(True)
+
         self._select_btn = QPushButton("Clear All")
         self._select_btn.setObjectName("ghost")
         self._select_btn.clicked.connect(self._toggle_all)
+
         sel_row = QHBoxLayout()
-        sel_row.addStretch()
+        sel_row.setSpacing(8)
+        sel_row.addWidget(self._search_input, stretch=1)
         sel_row.addWidget(self._select_btn)
         rl.addLayout(sel_row)
 
@@ -275,7 +419,7 @@ class SpotiflacApp(QMainWindow):
         self._preview_btn.setText("Loading…")
         self._dl_btn.setEnabled(False)
         self._clear_results()
-        self._status_lbl.setText("")
+        self._status_lbl.setText("Fetching playlist… (large playlists may take ~30s)")
 
         self._resolve_worker = ResolveWorker(url, self._spotify, self)
         self._resolve_worker.finished.connect(self._on_resolve_done)
@@ -286,15 +430,16 @@ class SpotiflacApp(QMainWindow):
         self._result = result
         self._preview_btn.setEnabled(True)
         self._preview_btn.setText("Preview")
+        self._status_lbl.setText("")
 
         # header
-        header = PlaylistHeader(
+        self._header = PlaylistHeader(
             name      = result.collection_name or "—",
             cover     = result.tracks[0].cover_url if result.tracks else "",
             count     = len(result.tracks),
             unmatched = len(result.unmatched_samples),
         )
-        self._header_box.addWidget(header)
+        self._header_box.addWidget(self._header)
 
         # rows
         for i, track in enumerate(result.tracks):
@@ -304,9 +449,11 @@ class SpotiflacApp(QMainWindow):
             self._rows.append(row)
             self._selected.add(i)
 
+        self._search_input.clear()
         self._stack.setCurrentIndex(1)
         self._update_dl_button()
         self._update_select_btn()
+        self._update_header_count()
 
     def _on_resolve_error(self, msg: str):
         self._preview_btn.setEnabled(True)
@@ -325,29 +472,58 @@ class SpotiflacApp(QMainWindow):
             self._selected.discard(idx)
         self._update_dl_button()
         self._update_select_btn()
+        self._update_header_count()
 
     def _toggle_all(self):
-        all_checked = len(self._selected) == len(self._rows)
+        # Operate only on currently visible (filtered) rows
+        visible = [r for r in self._rows if r.isVisible()]
+        if not visible:
+            visible = self._rows
+        all_checked = all(r.is_checked() for r in visible)
         target = not all_checked
-        for row in self._rows:
+        for row in visible:
             row.set_checked(target)
-        if target:
-            self._selected = set(range(len(self._rows)))
-        else:
-            self._selected.clear()
+            i = row.index() - 1
+            if target:
+                self._selected.add(i)
+            else:
+                self._selected.discard(i)
         self._update_dl_button()
         self._update_select_btn()
+        self._update_header_count()
 
     def _update_select_btn(self):
         if not self._rows:
             return
-        all_on = len(self._selected) == len(self._rows)
+        visible = [r for r in self._rows if r.isVisible()]
+        if not visible:
+            visible = self._rows
+        all_on = all(r.is_checked() for r in visible)
         self._select_btn.setText("Clear All" if all_on else "Select All")
 
     def _update_dl_button(self):
         n = len(self._selected)
+        if self._is_downloading:
+            return
         self._dl_btn.setText(f"Download ({n})" if n else "Download")
         self._dl_btn.setEnabled(n > 0 and self._result is not None)
+
+    def _update_header_count(self):
+        if self._header is not None:
+            self._header.set_selection_count(len(self._selected))
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    def _on_search_changed(self, _text: str):
+        self._search_timer.start()
+
+    def _apply_search_filter(self):
+        needle = self._search_input.text().strip().lower()
+        for row in self._rows:
+            row.setVisible(row.matches(needle))
+        self._update_select_btn()
 
     # ------------------------------------------------------------------
     # Download
@@ -363,10 +539,20 @@ class SpotiflacApp(QMainWindow):
                                 "Enable at least one service in Settings.")
             return
 
+        self._is_downloading = True
         self._dl_btn.setEnabled(False)
         self._dl_btn.setText("Downloading…")
+        self._stop_btn.setVisible(True)
         self._preview_btn.setEnabled(False)
         self._url_input.setEnabled(False)
+        self._search_input.setEnabled(False)
+        self._select_btn.setEnabled(False)
+
+        # Show progress bar
+        total = len(self._selected)
+        self._progress_bar.setRange(0, total if total > 0 else 1)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
 
         # mark selected as queued, others idle
         for i, row in enumerate(self._rows):
@@ -404,6 +590,17 @@ class SpotiflacApp(QMainWindow):
         self._dl_worker.error.connect(self._on_dl_error)
         self._dl_worker.start()
 
+    def _on_stop(self):
+        if self._dl_worker is None:
+            return
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.setText("Stopping…")
+        self._status_lbl.setText("Stopping after current track…")
+        try:
+            self._dl_worker.requestInterruption()
+        except Exception:
+            pass
+
     def _on_track_started(self, idx: int, _title: str):
         if 0 <= idx < len(self._rows):
             self._rows[idx].set_status(STATUS_RUNNING)
@@ -416,8 +613,12 @@ class SpotiflacApp(QMainWindow):
         if 0 <= idx < len(self._rows):
             self._rows[idx].set_status(STATUS_FAILED, tooltip=err)
 
-    def _on_progress(self, current: int, total: int, _title: str):
-        self._status_lbl.setText(f"{current} / {total}")
+    def _on_progress(self, current: int, total: int, title: str):
+        self._progress_bar.setRange(0, total if total > 0 else 1)
+        self._progress_bar.setValue(current)
+        # Truncate long titles for status
+        short = title if len(title) <= 36 else title[:35] + "…"
+        self._status_lbl.setText(f"{current} / {total}  ·  {short}")
 
     def _on_cooldown(self, remaining: int, total: int):
         if remaining <= 0:
@@ -428,9 +629,17 @@ class SpotiflacApp(QMainWindow):
             )
 
     def _on_dl_done(self, succeeded: int, failed: int):
+        self._is_downloading = False
         self._dl_btn.setEnabled(True)
+        self._dl_btn.setText("Download")
+        self._stop_btn.setVisible(False)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("Stop")
         self._preview_btn.setEnabled(True)
         self._url_input.setEnabled(True)
+        self._search_input.setEnabled(True)
+        self._select_btn.setEnabled(True)
+        self._progress_bar.setVisible(False)
         self._update_dl_button()
         msg = f"Done  ·  {succeeded} succeeded"
         if failed:
@@ -438,9 +647,17 @@ class SpotiflacApp(QMainWindow):
         self._status_lbl.setText(msg)
 
     def _on_dl_error(self, msg: str):
+        self._is_downloading = False
         self._dl_btn.setEnabled(True)
+        self._dl_btn.setText("Download")
+        self._stop_btn.setVisible(False)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("Stop")
         self._preview_btn.setEnabled(True)
         self._url_input.setEnabled(True)
+        self._search_input.setEnabled(True)
+        self._select_btn.setEnabled(True)
+        self._progress_bar.setVisible(False)
         self._update_dl_button()
         self._status_lbl.setText("")
         QMessageBox.critical(self, "Download Error", msg)
@@ -473,6 +690,7 @@ class SpotiflacApp(QMainWindow):
             it = self._header_box.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
+        self._header = None
         # rows
         while self._track_layout.count() > 1:
             it = self._track_layout.takeAt(0)
@@ -481,6 +699,8 @@ class SpotiflacApp(QMainWindow):
         self._rows.clear()
         self._selected.clear()
         self._result = None
+        if hasattr(self, "_search_input"):
+            self._search_input.clear()
         self._stack.setCurrentIndex(0)
         self._update_dl_button()
 
@@ -503,7 +723,7 @@ class SpotiflacApp(QMainWindow):
             except Exception:
                 restored = False
         if not restored:
-            self.resize(560, 660)
+            self.resize(820, 700)
         self.setWindowState(Qt.WindowState.WindowNoState)
 
     def closeEvent(self, ev):
@@ -523,6 +743,9 @@ class SpotiflacApp(QMainWindow):
 # ---------------------------------------------------------------------------
 
 def run():
+    # Setup debug logging on startup
+    _setup_debug_logging()
+    
     # Windows taskbar icon fix
     if sys.platform == "win32":
         import ctypes
@@ -541,12 +764,12 @@ def run():
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
 
-        win = SpotiflacApp()
-        win.show()
-        win.showNormal()
-        win.raise_()
-        win.activateWindow()
-        sys.exit(app.exec())
+        window = SpotiflacApp()
+        window.show()
+
+        ret = app.exec()
+        logging.info("YtFLAC GUI exited with code %d", ret)
+        return ret
     except Exception:
         _log_crash(*sys.exc_info())
-        raise
+        return 1

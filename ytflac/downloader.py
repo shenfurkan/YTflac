@@ -12,11 +12,17 @@ from pathlib import Path
 from .core.models import TrackMetadata, DownloadResult
 from .core.progress import DownloadManager, ProgressCallback
 from .core.errors import SpotiflacError
+from .core.console import print_track_header, print_source_banner, print_summary, print_api_failure, print_quality_fallback
+from .core.provider_stats import record_success, record_failure, prioritize
+from .core.history import HistoryManager
+from .core.isrc_cache import get_cached_isrc, put_cached_isrc
 from .providers.base import BaseProvider
 from .providers.spotify_metadata import SpotifyMetadataClient
-from .core.console import print_track_header, print_summary
 
 logger = logging.getLogger(__name__)
+
+# Initialize debug modules
+_history_manager = HistoryManager()
 
 
 @dataclass
@@ -85,6 +91,16 @@ def download_one(
 ) -> DownloadResult:
     errors: dict[str, str] = {}
     manager = DownloadManager()
+    
+    # Add to progress queue
+    manager.add_to_queue(metadata.id, metadata.title, metadata.artists, metadata.album, metadata.id)
+    
+    # Check ISRC cache
+    cached_isrc = get_cached_isrc(metadata.id)
+    if cached_isrc:
+        logger.debug(f"[ISRC Cache] Hit for {metadata.id}: {cached_isrc}")
+        if not metadata.isrc:
+            metadata = metadata.model_copy(update={"isrc": cached_isrc})
 
     for provider in providers:
         logger.info("[%s] Trying: %s — %s", provider.name, metadata.artists, metadata.title)
@@ -101,7 +117,7 @@ def download_one(
             use_album_track_num = opts.use_album_track_numbers,
             first_artist_only   = opts.first_artist_only,
             allow_fallback      = opts.allow_fallback,
-            quality             = opts.quality,          # FIX #1: quality ora propagata
+            quality             = opts.quality,
             embed_lyrics            = opts.embed_lyrics,
             lyrics_providers        = opts.lyrics_providers,
             lyrics_spotify_token    = opts.lyrics_spotify_token,
@@ -111,10 +127,40 @@ def download_one(
 
         if result.success:
             logger.info("[%s] ✓ %s — %s", provider.name, metadata.artists, metadata.title)
+            # Record provider success for stats
+            record_success(provider.name, getattr(provider, '_last_api_url', 'unknown'))
+            
+            # Add to history
+            _history_manager.add_download(
+                track_id=metadata.id,
+                track_name=metadata.title,
+                artist_name=metadata.artists,
+                provider=provider.name,
+                success=True,
+                file_path=result.file_path
+            )
+            
+            # Update ISRC cache
+            if metadata.isrc:
+                put_cached_isrc(metadata.id, metadata.isrc)
+            
             return result
 
         errors[provider.name] = result.error or "unknown error"
         logger.warning("[%s] ✗ %s", provider.name, result.error)
+        
+        # Record provider failure for stats
+        record_failure(provider.name, getattr(provider, '_last_api_url', 'unknown'))
+        
+        # Add failed download to history
+        _history_manager.add_download(
+            track_id=metadata.id,
+            track_name=metadata.title,
+            artist_name=metadata.artists,
+            provider=provider.name,
+            success=False,
+            file_path=""
+        )
 
     summary = "; ".join(f"{k}: {v}" for k, v in errors.items())
     return DownloadResult.fail("none", f"All providers failed — {summary}")

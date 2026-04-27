@@ -265,4 +265,86 @@ QListWidget {{
 }}
 QListWidget::item {{ padding: 6px 8px; }}
 QListWidget::item:selected {{ background: {BG_HOVER}; }}
+
+/* Search input ------------------------------------------------------ */
+QLineEdit#search {{
+    background: {BG_ELEV};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    padding: 7px 11px 7px 30px;
+    color: {TEXT};
+    font-size: 12px;
+}}
+QLineEdit#search:focus {{
+    border: 1px solid {LINE_STRONG};
+    background: {BG_HOVER};
+}}
+
+/* Progress bar ------------------------------------------------------ */
+QProgressBar {{
+    background: {BG_ELEV};
+    border: 1px solid {LINE};
+    border-radius: 4px;
+    text-align: center;
+    color: {TEXT};
+    font-size: 11px;
+    font-weight: 500;
+    height: 8px;
+    max-height: 8px;
+}}
+QProgressBar::chunk {{
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 {ACCENT}, stop:1 {ACCENT_HOV});
+    border-radius: 3px;
+}}
+
+/* Badge / pill ------------------------------------------------------ */
+QLabel#badge {{
+    background: {BG_ELEV};
+    border: 1px solid {LINE_STRONG};
+    border-radius: 10px;
+    padding: 2px 9px;
+    font-size: 11px;
+    font-weight: 500;
+    color: {TEXT_DIM};
+}}
+QLabel#badge_warn {{
+    background: rgba(212, 160, 85, 0.12);
+    border: 1px solid rgba(212, 160, 85, 0.30);
+    border-radius: 10px;
+    padding: 2px 9px;
+    font-size: 11px;
+    font-weight: 500;
+    color: {WARNING};
+}}
+QLabel#badge_accent {{
+    background: rgba(79, 142, 247, 0.12);
+    border: 1px solid rgba(79, 142, 247, 0.30);
+    border-radius: 10px;
+    padding: 2px 9px;
+    font-size: 11px;
+    font-weight: 500;
+    color: {ACCENT};
+}}
+
+/* Empty state card -------------------------------------------------- */
+QFrame#empty_card {{
+    background: transparent;
+    border: 1px dashed {LINE_STRONG};
+    border-radius: 12px;
+}}
+
+/* Stop button ------------------------------------------------------- */
+QPushButton#danger {{
+    background: rgba(224, 96, 96, 0.10);
+    color: {ERROR};
+    border: 1px solid rgba(224, 96, 96, 0.30);
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 500;
+}}
+QPushButton#danger:hover {{
+    background: rgba(224, 96, 96, 0.18);
+    border: 1px solid rgba(224, 96, 96, 0.45);
+}}
 """

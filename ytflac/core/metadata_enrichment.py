@@ -14,7 +14,10 @@ Uso minimo (nel tagger/downloader):
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from dataclasses import dataclass, field
@@ -29,6 +32,129 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/145.0.0.0 Safari/537.36"
 )
+
+# Cache settings
+_CACHE_TTL_S = 7 * 24 * 60 * 60  # 7 days
+_CACHE_FILE = os.path.expanduser("~/.cache/ytflac/metadata_cache.json")
+_MAX_CACHE_ENTRIES = 3000
+
+
+# --------------------------------------------------------------------------- #
+# Cache Implementation                                                        #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class _CacheEntry:
+    data: EnrichedMetadata
+    expires_at: float
+
+    def is_expired(self) -> bool:
+        return time.monotonic() > self.expires_at
+
+
+class _MetadataCache:
+    def __init__(self):
+        self._cache: dict[str, _CacheEntry] = {}
+        self._lock = threading.Lock()
+        self._load_from_disk()
+
+    def _get_cache_key(self, isrc: str, track_name: str, artist_name: str) -> str:
+        """Generate a cache key from available identifiers."""
+        if isrc:
+            return f"isrc:{isrc}"
+        # Fallback to name-based key
+        return f"name:{track_name.lower().strip()}|{artist_name.lower().strip()}"
+
+    def get(self, isrc: str, track_name: str, artist_name: str) -> EnrichedMetadata | None:
+        key = self._get_cache_key(isrc, track_name, artist_name)
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry and not entry.is_expired():
+                logger.debug("[meta/cache] cache hit for %s", key)
+                return entry.data
+            elif entry:
+                # Remove expired entry
+                del self._cache[key]
+                self._save_to_disk()
+        return None
+
+    def set(self, isrc: str, track_name: str, artist_name: str, data: EnrichedMetadata) -> None:
+        if not data or not any([data.genre, data.label, data.bpm, data.upc, data.isrc, data.cover_url_hd]):
+            return
+        key = self._get_cache_key(isrc, track_name, artist_name)
+        expires_at = time.monotonic() + _CACHE_TTL_S
+        with self._lock:
+            self._cache[key] = _CacheEntry(data, expires_at)
+            # Trim cache if too large
+            if len(self._cache) > _MAX_CACHE_ENTRIES:
+                # Remove oldest entries (simple FIFO)
+                keys_to_remove = list(self._cache.keys())[:len(self._cache) - _MAX_CACHE_ENTRIES]
+                for k in keys_to_remove:
+                    del self._cache[k]
+            self._save_to_disk()
+        logger.debug("[meta/cache] cached %s", key)
+
+    def _load_from_disk(self) -> None:
+        try:
+            cache_dir = os.path.dirname(_CACHE_FILE)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+            if os.path.exists(_CACHE_FILE):
+                with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    now = time.monotonic()
+                    for key, value in data.items():
+                        expires_at = value.get("expires_at", 0)
+                        if expires_at > now:
+                            # Reconstruct EnrichedMetadata from dict
+                            meta_data = value.get("data", {})
+                            entry_data = EnrichedMetadata(
+                                genre=meta_data.get("genre", ""),
+                                label=meta_data.get("label", ""),
+                                bpm=meta_data.get("bpm", 0),
+                                explicit=meta_data.get("explicit", False),
+                                upc=meta_data.get("upc", ""),
+                                isrc=meta_data.get("isrc", ""),
+                                cover_url_hd=meta_data.get("cover_url_hd", ""),
+                                _sources=meta_data.get("_sources", {})
+                            )
+                            self._cache[key] = _CacheEntry(entry_data, expires_at)
+                logger.debug("[meta/cache] loaded %d entries from disk", len(self._cache))
+        except Exception as exc:
+            logger.warning("[meta/cache] failed to load from disk: %s", exc)
+
+    def _save_to_disk(self) -> None:
+        try:
+            cache_dir = os.path.dirname(_CACHE_FILE)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+            data = {}
+            for key, entry in self._cache.items():
+                if not entry.is_expired():
+                    # Convert EnrichedMetadata to dict for JSON serialization
+                    meta_dict = {
+                        "genre": entry.data.genre,
+                        "label": entry.data.label,
+                        "bpm": entry.data.bpm,
+                        "explicit": entry.data.explicit,
+                        "upc": entry.data.upc,
+                        "isrc": entry.data.isrc,
+                        "cover_url_hd": entry.data.cover_url_hd,
+                        "_sources": entry.data._sources
+                    }
+                    data[key] = {
+                        "data": meta_dict,
+                        "expires_at": entry.expires_at
+                    }
+            with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("[meta/cache] failed to save to disk: %s", exc)
+
+
+# Global cache instance
+_metadata_cache = _MetadataCache()
+
 
 # --------------------------------------------------------------------------- #
 # Result container                                                             #
@@ -307,8 +433,6 @@ class _QobuzMeta:
             logger.debug("[meta/qobuz] %s", exc)
         return out
 
-
-# --------------------------------------------------------------------------- #
 # Public API                                                                   #
 # --------------------------------------------------------------------------- #
 
@@ -342,6 +466,12 @@ def enrich_metadata(
     Returns:
         EnrichedMetadata con i campi trovati (quelli non trovati restano "").
     """
+    # Check cache first
+    cached = _metadata_cache.get(isrc, track_name, artist_name)
+    if cached:
+        logger.debug("[meta/enrich] cache hit for '%s' by '%s'", track_name, artist_name)
+        return cached
+
     if providers is None:
         providers = ["deezer", "apple", "qobuz", "tidal"]
 
@@ -391,5 +521,8 @@ def enrich_metadata(
 
     if merged._sources:
         logger.debug("[meta/enrich] enriched fields: %s", merged._sources)
+
+    # Cache the result
+    _metadata_cache.set(isrc, track_name, artist_name, merged)
 
     return merged

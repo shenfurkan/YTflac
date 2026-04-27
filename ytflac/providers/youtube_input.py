@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants (mirrored from Go)
 # ---------------------------------------------------------------------------
 
-MAX_PLAYLIST_TRACKS = 100
+MAX_PLAYLIST_TRACKS = 0  # 0 = no cap
 PER_TRACK_RESOLVE_TIMEOUT = 20  # seconds
 MAX_UNMATCHED_SAMPLES = 20
 
@@ -41,6 +41,7 @@ _DEFAULT_UA = (
 
 _PLAYLIST_VIDEO_ID_RE = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
 _WATCH_ENDPOINT_VIDEO_ID_RE = re.compile(r'"watchEndpoint":\{"videoId":"([A-Za-z0-9_-]{11})"')
+_VIDEO_ID_PATTERN = re.compile(r'([A-Za-z0-9_-]{11})')
 _HEX_ESCAPE_RE = re.compile(r'\\x([0-9A-Fa-f]{2})')
 _YT_INITIAL_DATA_MARKERS = (
     "var ytInitialData = ",
@@ -191,6 +192,154 @@ def fetch_playlist_html(playlist_id: str, http: HttpClient | None = None) -> str
     raise last_err or RuntimeError("Failed to fetch YouTube playlist HTML")
 
 
+def _fetch_playlist_via_ytdlp(playlist_id: str) -> tuple[str, list[tuple[str, str, str]]]:
+    """
+    Fetch full playlist using yt-dlp (handles pagination natively).
+    Returns (title, [(video_id, title, uploader), ...]).
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        logger.warning("[youtube_input] yt-dlp not installed, falling back to HTML scraping")
+        return "", []
+
+    url = f"https://music.youtube.com/playlist?list={playlist_id}"
+    opts = {
+        'extract_flat': True,
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', '') or ''
+            entries = info.get('entries', []) or []
+            tracks = []
+            for entry in entries:
+                if not entry:
+                    continue
+                vid = entry.get('id', '')
+                track_title = entry.get('title', '') or ''
+                uploader = entry.get('uploader', '') or entry.get('channel', '') or ''
+                if vid and len(vid) == 11:
+                    tracks.append((vid, track_title, uploader))
+            return title, tracks
+    except Exception as exc:
+        logger.warning("[youtube_input] yt-dlp playlist fetch failed: %s", exc)
+        return "", []
+
+
+def _fetch_playlist_via_api(playlist_id: str, http: HttpClient | None = None) -> list[str]:
+    """Fetch playlist video IDs using YouTube Data API with pagination."""
+    http = http or _build_http()
+    video_ids: list[str] = []
+    next_page_token = None
+    
+    while True:
+        # YouTube Data API endpoint for playlist items
+        api_url = f"https://www.googleapis.com/youtube/v3/playlistItems"
+        params = {
+            "part": "contentDetails",
+            "playlistId": playlist_id,
+            "maxResults": 50,
+        }
+        if next_page_token:
+            params["pageToken"] = next_page_token
+        
+        try:
+            resp = http.get(f"{api_url}?{'&'.join(f'{k}={v}' for k, v in params.items())}")
+            data = resp.json()
+            
+            if "items" in data:
+                for item in data["items"]:
+                    vid = item.get("contentDetails", {}).get("videoId", "")
+                    if vid and vid not in video_ids:
+                        video_ids.append(vid)
+            
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
+                break
+                
+        except Exception as exc:
+            logger.warning("[youtube_input] API playlist fetch failed: %s", exc)
+            break
+    
+    return video_ids
+
+
+def _fetch_playlist_title_via_api(playlist_id: str, http: HttpClient | None = None) -> str:
+    """Fetch playlist title using YouTube Data API."""
+    http = http or _build_http()
+    
+    api_url = f"https://www.googleapis.com/youtube/v3/playlists"
+    params = {
+        "part": "snippet",
+        "id": playlist_id,
+    }
+    
+    try:
+        resp = http.get(f"{api_url}?{'&'.join(f'{k}={v}' for k, v in params.items())}")
+        data = resp.json()
+        
+        if "items" in data and data["items"]:
+            return data["items"][0].get("snippet", {}).get("title", "")
+    except Exception as exc:
+        logger.warning("[youtube_input] API playlist title fetch failed: %s", exc)
+    
+    return ""
+
+
+def _extract_continuation_token(html: str) -> str | None:
+    """Extract continuation token from YouTube Music HTML."""
+    # Try multiple patterns for continuation token
+    patterns = [
+        r'"continuation":"([^"]+)"',
+        r'"ctoken":"([^"]+)"',
+        r'"continuationCommand":\{"token":"([^"]+)"',
+        r'"nextContinuationData":\{"continuation":"([^"]+)"',
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, html)
+        if matches:
+            # Return the last continuation token (most likely to be valid)
+            return matches[-1]
+    
+    return None
+
+
+def _fetch_continuation(continuation: str, http: HttpClient | None = None) -> str:
+    """Fetch continuation data from YouTube Music."""
+    http = http or _build_http()
+    
+    # YouTube Music continuation endpoint
+    endpoint = "https://music.youtube.com/youtubei/v1/browse"
+    
+    # Build the request body
+    body = {
+        "context": {
+            "client": {
+                "clientName": "WEB_REMIX",
+                "clientVersion": "0.1",
+            }
+        },
+        "continuation": continuation,
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+    }
+    
+    try:
+        resp = http.post(endpoint, json=body, headers=headers)
+        return resp.text
+    except Exception as exc:
+        logger.warning("[youtube_input] Continuation request failed: %s", exc)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # HTML parsing
 # ---------------------------------------------------------------------------
@@ -207,10 +356,13 @@ def parse_playlist_title(raw_html: str) -> str:
 
 def parse_playlist_video_ids(raw_html: str, max_count: int = MAX_PLAYLIST_TRACKS) -> list[str]:
     raw_html = _decode_js_hex_escapes(raw_html)
-    matches = _PLAYLIST_VIDEO_ID_RE.findall(raw_html)
-    matches.extend(_WATCH_ENDPOINT_VIDEO_ID_RE.findall(raw_html))
     seen: set[str] = set()
     result: list[str] = []
+    
+    # Try regex patterns first
+    matches = _PLAYLIST_VIDEO_ID_RE.findall(raw_html)
+    matches.extend(_WATCH_ENDPOINT_VIDEO_ID_RE.findall(raw_html))
+    
     for vid in matches:
         vid = vid.strip()
         if not vid or vid in seen:
@@ -219,20 +371,33 @@ def parse_playlist_video_ids(raw_html: str, max_count: int = MAX_PLAYLIST_TRACKS
         result.append(vid)
         if max_count and len(result) >= max_count:
             break
-    if result:
-        return result
-
-    data = _extract_yt_initial_data(raw_html)
-    if not data:
-        return result
-
-    for vid in _collect_video_ids_from_json(data):
-        if vid in seen:
-            continue
-        seen.add(vid)
-        result.append(vid)
-        if max_count and len(result) >= max_count:
-            break
+    
+    # If regex didn't get enough, try JSON parsing
+    if not result or (max_count and len(result) < max_count):
+        data = _extract_yt_initial_data(raw_html)
+        if data:
+            for vid in _collect_video_ids_from_json(data):
+                if vid in seen:
+                    continue
+                seen.add(vid)
+                result.append(vid)
+                if max_count and len(result) >= max_count:
+                    break
+    
+    # Fallback: try to extract all 11-char video IDs from the entire HTML
+    # This catches IDs in different formats/contexts
+    if not result or (max_count and len(result) < max_count):
+        all_ids = _VIDEO_ID_PATTERN.findall(raw_html)
+        for vid in all_ids:
+            vid = vid.strip()
+            # Basic validation: 11 chars, alphanumeric with _ and -
+            if len(vid) == 11 and vid.replace('_', '').replace('-', '').isalnum():
+                if vid not in seen:
+                    seen.add(vid)
+                    result.append(vid)
+                    if max_count and len(result) >= max_count:
+                        break
+    
     return result
 
 
@@ -596,15 +761,55 @@ def resolve_youtube_playlist(
     http = http or _build_http()
 
     playlist_id = extract_playlist_id(url)
-    raw_html = fetch_playlist_html(playlist_id, http)
 
+    # Primary: use yt-dlp for full playlist extraction with pagination
+    title, ytdlp_tracks = _fetch_playlist_via_ytdlp(playlist_id)
+
+    if ytdlp_tracks:
+        # We already have title + uploader from yt-dlp, skip oEmbed per-video
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _resolve_with_meta(item: tuple[str, str, str]):
+            vid, raw_title, raw_uploader = item
+            try:
+                return _resolve_spotify_from_yt_meta(
+                    vid, raw_title, raw_uploader, spotify_client
+                )
+            except Exception as exc:
+                logger.warning("[youtube_input] Video %s resolve crashed: %s", vid, exc)
+                return None, _YouTubeTrackContext(video_id=vid, raw_title=raw_title, raw_artist=raw_uploader)
+
+        max_workers = min(8, len(ytdlp_tracks))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(_resolve_with_meta, ytdlp_tracks))
+
+        tracks: list[TrackMetadata] = []
+        unmatched: list[str] = []
+        for (vid, raw_title, _), (metadata, ctx) in zip(ytdlp_tracks, results):
+            if metadata is None:
+                if len(unmatched) < MAX_UNMATCHED_SAMPLES:
+                    unmatched.append(ctx.raw_title or raw_title or vid)
+                continue
+            tracks.append(metadata)
+
+        if not tracks:
+            raise ValueError("No playlist tracks could be matched on Spotify")
+
+        return YouTubeResolveResult(
+            collection_name=title or "YouTube Music Playlist",
+            tracks=tracks,
+            is_playlist=True,
+            unmatched_samples=unmatched,
+        )
+
+    # Fallback: HTML scraping (limited to ~100 tracks)
+    raw_html = fetch_playlist_html(playlist_id, http)
     title = parse_playlist_title(raw_html)
     video_ids = parse_playlist_video_ids(raw_html, MAX_PLAYLIST_TRACKS)
 
     if not video_ids:
         raise ValueError("No tracks found in YouTube Music playlist")
 
-    # Resolve all videos concurrently while preserving original ordering.
     from concurrent.futures import ThreadPoolExecutor
 
     def _resolve(vid: str):
@@ -618,8 +823,8 @@ def resolve_youtube_playlist(
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         results = list(pool.map(_resolve, video_ids))
 
-    tracks: list[TrackMetadata] = []
-    unmatched: list[str] = []
+    tracks = []
+    unmatched = []
     for vid, (metadata, ctx) in zip(video_ids, results):
         if metadata is None:
             if len(unmatched) < MAX_UNMATCHED_SAMPLES:
@@ -636,6 +841,64 @@ def resolve_youtube_playlist(
         is_playlist=True,
         unmatched_samples=unmatched,
     )
+
+
+def _resolve_spotify_from_yt_meta(
+    video_id: str,
+    raw_title: str,
+    raw_author: str,
+    spotify_client,
+) -> tuple[TrackMetadata | None, _YouTubeTrackContext]:
+    """Resolve YouTube video to Spotify track using already-fetched title/author.
+    
+    Skips the oEmbed call since yt-dlp already provided this metadata.
+    """
+    track, artist = clean_yt_title_artist(raw_title, raw_author)
+    ctx = _YouTubeTrackContext(
+        video_id=video_id,
+        raw_title=raw_title,
+        raw_artist=raw_author,
+        clean_track=track,
+        clean_artist=artist,
+    )
+    if not track:
+        return None, ctx
+
+    queries = build_search_queries(track, artist)
+    candidates: list[_SearchCandidate] = []
+    seen_ids: set[str] = set()
+
+    for query in queries:
+        try:
+            items = spotify_client.search_tracks(query, limit=10)
+        except Exception as exc:
+            logger.debug("[youtube_input] Spotify search failed for %r: %s", query, exc)
+            continue
+
+        for item in items:
+            c = _candidate_from_spotify_item(item)
+            if not c.track_id or c.track_id in seen_ids:
+                continue
+            seen_ids.add(c.track_id)
+            candidates.append(c)
+
+        if len(candidates) >= 20:
+            break
+
+    if not candidates:
+        return None, ctx
+
+    best = pick_best_match(candidates, track, artist, raw_title)
+    if not best or not best.track_id:
+        return None, ctx
+
+    try:
+        metadata = spotify_client.get_track(best.track_id)
+    except Exception as exc:
+        logger.warning("[youtube_input] get_track(%s) failed: %s", best.track_id, exc)
+        return None, ctx
+
+    return metadata, ctx
 
 
 def resolve_youtube_track(

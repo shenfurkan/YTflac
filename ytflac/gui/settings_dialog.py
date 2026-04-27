@@ -170,6 +170,10 @@ class SettingsDialog(QDialog):
             self._settings.value("filename_format", "{title} - {artist}", type=str)
         )
         self._fmt_input.setPlaceholderText("{title} - {artist}")
+        self._fmt_input.setToolTip(
+            "Use placeholders: {title}, {artist}, {album}, {track_num}\n"
+            "Example: {track_num:02d} - {title} - {artist}"
+        )
         form.addRow("Filename template", self._fmt_input)
 
         hint = QLabel("Available: {title}, {artist}, {album}, {track_num}")
@@ -178,14 +182,17 @@ class SettingsDialog(QDialog):
 
         self._cb_track_num = QCheckBox("Prepend track number to filename")
         self._cb_track_num.setChecked(self._settings.value("use_track_numbers", False, type=bool))
+        self._cb_track_num.setToolTip("Adds track number (e.g., '01') before the filename")
         form.addRow("", self._cb_track_num)
 
         self._cb_album_track_num = QCheckBox("Use the actual album track number")
         self._cb_album_track_num.setChecked(self._settings.value("use_album_track_numbers", False, type=bool))
+        self._cb_album_track_num.setToolTip("Use the original track number from the album metadata")
         form.addRow("", self._cb_album_track_num)
 
         self._cb_first_artist = QCheckBox("Use only the first artist")
         self._cb_first_artist.setChecked(self._settings.value("first_artist_only", False, type=bool))
+        self._cb_first_artist.setToolTip("For multi-artist tracks, only use the first artist in the filename")
         form.addRow("", self._cb_first_artist)
 
         sep = QLabel(" ")
@@ -195,10 +202,12 @@ class SettingsDialog(QDialog):
 
         self._cb_artist_sub = QCheckBox("Create artist subfolder")
         self._cb_artist_sub.setChecked(self._settings.value("use_artist_subfolders", False, type=bool))
+        self._cb_artist_sub.setToolTip("Organize downloads by artist (e.g., Music/Artist/Album/)")
         form.addRow("", self._cb_artist_sub)
 
         self._cb_album_sub = QCheckBox("Create album subfolder")
         self._cb_album_sub.setChecked(self._settings.value("use_album_subfolders", False, type=bool))
+        self._cb_album_sub.setToolTip("Organize downloads by album (e.g., Music/Album/)")
         form.addRow("", self._cb_album_sub)
 
         return w
@@ -212,6 +221,7 @@ class SettingsDialog(QDialog):
 
         self._cb_enrich = QCheckBox("Enrich metadata (BPM, Label, Genre, etc.)")
         self._cb_enrich.setChecked(self._settings.value("enrich_metadata", True, type=bool))
+        self._cb_enrich.setToolTip("Fetch additional metadata from multiple sources")
         form.addRow("", self._cb_enrich)
 
         form.addRow(_section("Provider order (click to toggle)"))
@@ -223,6 +233,7 @@ class SettingsDialog(QDialog):
         self._qobuz_input = QLineEdit(self._settings.value("qobuz_token", "", type=str))
         self._qobuz_input.setPlaceholderText("Optional — may be left empty")
         self._qobuz_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._qobuz_input.setToolTip("Optional Qobuz authentication token for better metadata quality")
         form.addRow("Qobuz token", self._qobuz_input)
 
         return w
@@ -236,6 +247,7 @@ class SettingsDialog(QDialog):
 
         self._cb_lyrics = QCheckBox("Embed lyrics into the FLAC/MP3 file")
         self._cb_lyrics.setChecked(self._settings.value("embed_lyrics", False, type=bool))
+        self._cb_lyrics.setToolTip("Embed synchronized lyrics (LRC) or plain lyrics into the audio file")
         form.addRow("", self._cb_lyrics)
 
         form.addRow(_section("Provider order (click to toggle)"))
@@ -249,6 +261,7 @@ class SettingsDialog(QDialog):
         )
         self._spot_token_input.setPlaceholderText("Optional — sp_dc cookie for Spotify lyrics")
         self._spot_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._spot_token_input.setToolTip("Spotify sp_dc cookie for fetching synced lyrics from Spotify")
         form.addRow("Spotify token", self._spot_token_input)
 
         return w
