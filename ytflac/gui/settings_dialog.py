@@ -277,7 +277,23 @@ class SettingsDialog(QDialog):
         self._loglevel_combo.setCurrentText(self._settings.value("log_level", "WARNING", type=str))
         form.addRow("Log level", self._loglevel_combo)
 
+        # --- Cooldown / rate-limit protection ---
+        self._cd_every_spin = QSpinBox()
+        self._cd_every_spin.setRange(0, 500)
+        self._cd_every_spin.setSpecialValueText("disabled")
+        self._cd_every_spin.setSuffix(" tracks")
+        self._cd_every_spin.setValue(self._settings.value("cooldown_every", 20, type=int))
+        form.addRow("Cooldown every", self._cd_every_spin)
+
+        self._cd_secs_spin = QSpinBox()
+        self._cd_secs_spin.setRange(0, 600)
+        self._cd_secs_spin.setSuffix(" s")
+        self._cd_secs_spin.setValue(self._settings.value("cooldown_seconds", 30, type=int))
+        form.addRow("Cooldown duration", self._cd_secs_spin)
+
         hint = QLabel(
+            "Cooldown pauses downloads after every N tracks to avoid rate limits "
+            "on Tidal/Qobuz. Auto-skipped on small batches.\n"
             "Note: log level applies on next launch."
         )
         hint.setObjectName("faint")
@@ -331,6 +347,8 @@ class SettingsDialog(QDialog):
         s.setValue("allow_fallback",      self._cb_fallback.isChecked())
         s.setValue("inter_track_delay_s", float(self._delay_spin.value()))
         s.setValue("log_level",           self._loglevel_combo.currentText())
+        s.setValue("cooldown_every",      int(self._cd_every_spin.value()))
+        s.setValue("cooldown_seconds",    int(self._cd_secs_spin.value()))
         self.accept()
 
     def _restore_defaults(self):

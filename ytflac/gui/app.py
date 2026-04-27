@@ -382,18 +382,24 @@ class SpotiflacApp(QMainWindow):
         )
         indices = sorted(self._selected)
 
+        cd_every = self._settings.value("cooldown_every", 20, type=int)
+        cd_secs  = self._settings.value("cooldown_seconds", 30, type=int)
+
         self._dl_worker = GUIDownloadWorker(
             tracks           = self._result.tracks,
             opts             = opts,
             collection_name  = self._result.collection_name,
             is_playlist      = self._result.is_playlist,
             selected_indices = indices,
+            cooldown_every   = cd_every,
+            cooldown_seconds = cd_secs,
             parent           = self,
         )
         self._dl_worker.track_started.connect(self._on_track_started)
         self._dl_worker.track_done.connect(self._on_track_done)
         self._dl_worker.track_failed.connect(self._on_track_failed)
         self._dl_worker.progress.connect(self._on_progress)
+        self._dl_worker.cooldown.connect(self._on_cooldown)
         self._dl_worker.finished.connect(self._on_dl_done)
         self._dl_worker.error.connect(self._on_dl_error)
         self._dl_worker.start()
@@ -412,6 +418,14 @@ class SpotiflacApp(QMainWindow):
 
     def _on_progress(self, current: int, total: int, _title: str):
         self._status_lbl.setText(f"{current} / {total}")
+
+    def _on_cooldown(self, remaining: int, total: int):
+        if remaining <= 0:
+            self._status_lbl.setText("Resuming…")
+        else:
+            self._status_lbl.setText(
+                f"Cooldown · {remaining}s left  (avoiding rate limits)"
+            )
 
     def _on_dl_done(self, succeeded: int, failed: int):
         self._dl_btn.setEnabled(True)

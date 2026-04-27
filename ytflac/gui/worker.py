@@ -59,11 +59,14 @@ class DownloadWorker(QThread):
     track_failed  = pyqtSignal(int, str, str)
 
     progress = pyqtSignal(int, int, str)
+    cooldown = pyqtSignal(int, int)   # remaining_seconds, total_seconds
     finished = pyqtSignal(int, int)
     error    = pyqtSignal(str)
 
     def __init__(self, tracks, opts, collection_name: str,
                  is_playlist: bool, selected_indices: list[int] | None = None,
+                 cooldown_every: int = 20,
+                 cooldown_seconds: int = 30,
                  parent=None):
         super().__init__(parent)
         self._tracks           = tracks
@@ -73,6 +76,8 @@ class DownloadWorker(QThread):
         if selected_indices is None:
             selected_indices = list(range(len(tracks)))
         self._selected = list(selected_indices)
+        self._cooldown_every   = max(0, int(cooldown_every))
+        self._cooldown_seconds = max(0, int(cooldown_seconds))
 
     def run(self):
         try:
@@ -96,7 +101,15 @@ class DownloadWorker(QThread):
             succeeded = 0
             failed    = 0
 
+            cd_every = self._cooldown_every
+            cd_secs  = self._cooldown_seconds
+            # Skip cooldown entirely on small batches.
+            cooldown_active = cd_every > 0 and cd_secs > 0 and total > cd_every
+
             for done_count, idx in enumerate(self._selected, start=1):
+                if self.isInterruptionRequested():
+                    break
+
                 track = self._tracks[idx]
                 self.track_started.emit(idx, track.title)
                 self.progress.emit(done_count, total, track.title)
@@ -104,16 +117,27 @@ class DownloadWorker(QThread):
                 try:
                     result = download_one(track, base, providers, self._opts, idx + 1)
                 except Exception as exc:
+                    # Never crash the worker on a single track failure.
                     failed += 1
                     self.track_failed.emit(idx, track.title, str(exc))
-                    continue
-
-                if result.success:
-                    succeeded += 1
-                    self.track_done.emit(idx, track.title)
                 else:
-                    failed += 1
-                    self.track_failed.emit(idx, track.title, result.error or "unknown")
+                    if result.success:
+                        succeeded += 1
+                        self.track_done.emit(idx, track.title)
+                    else:
+                        failed += 1
+                        self.track_failed.emit(idx, track.title, result.error or "unknown")
+
+                # Standby cooldown to avoid provider rate limits.
+                if (cooldown_active
+                        and done_count < total
+                        and done_count % cd_every == 0):
+                    for remaining in range(cd_secs, 0, -1):
+                        if self.isInterruptionRequested():
+                            break
+                        self.cooldown.emit(remaining, cd_secs)
+                        self.msleep(1000)
+                    self.cooldown.emit(0, cd_secs)
 
             self.finished.emit(succeeded, failed)
         except Exception as exc:
