@@ -1,0 +1,11 @@
+examples/
+__pycache__/
+.python-version
+.DS_Store
+.venv/
+temp/
+/.idea
+node_modules/
+*.egg-info/
+dist/
+build/

@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "YtFLAC"
+version = "0.0.0-dev"
+description = "Get YouTube Music & Spotify tracks in true lossless FLAC from Tidal, Qobuz, Deezer & Amazon Music — no account required."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"} # Mude para a sua licença real se não for MIT
+authors = [
+  { name="shenfurkan" }
+]
+
+keywords = [
+    "spotify", "flac", "downloader", "music", "lossless", "lossless-music",
+    "tidal", "qobuz", "amazon-music", "audio", "YtFLAC", "spotify-downloader",
+    "no-account", "hi-res"
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "Topic :: Multimedia :: Sound/Audio",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+dependencies = [
+    "requests>=2.32.3",
+    "mutagen>=1.47.0",
+    "pyotp>=2.9.0",
+    "pydantic>=2.7.0",
+    "cryptography>=42.0.0"
+]
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sse-starlette>=2.1.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/shenfurkan/YTflac"
+"Repository" = "https://github.com/shenfurkan/YTflac"
+"Bug Tracker" = "https://github.com/shenfurkan/YTflac/issues"
+
+[project.scripts]
+ytflac = "SpotiFLAC.gui.app:run"
+
+[tool.setuptools.packages.find]
+include = ["SpotiFLAC*", "ytflac*"]
