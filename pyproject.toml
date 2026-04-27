@@ -54,7 +54,7 @@ web = [
 "Bug Tracker" = "https://github.com/shenfurkan/YTflac/issues"
 
 [project.scripts]
-ytflac = "SpotiFLAC.gui.app:run"
+ytflac = "ytflac.gui.app:run"
 
 [tool.setuptools.packages.find]
-include = ["SpotiFLAC*", "ytflac*"]
+include = ["ytflac*"]
