@@ -12,3 +12,6 @@ build/
 installer/
 *.spec
 ytflac_crash.log
+ytflac_debug.log
+ytflac_failures.log
+ytflac_crash.log
