@@ -6,8 +6,9 @@ e tipo hints completi.
 from __future__ import annotations
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
+from typing import Callable
 
 
 class DownloadStatus(Enum):
@@ -145,12 +146,15 @@ class ProgressCallback:
     Compatibile con la signature (current_bytes, total_bytes).
     """
 
-    def __init__(self, item_id: str = "") -> None:
+    def __init__(self, item_id: str = "",
+                 log_callback: Callable[[str, str], None] | None = None) -> None:
         self._item_id   = item_id
         self._start     = time.time()
         self._last_time = self._start
         self._last_bytes = 0
         self._manager   = DownloadManager()
+        self._log_cb    = log_callback
+        self._last_log_time = 0.0
 
     def __call__(self, current_bytes: int, total_bytes: int) -> None:
         now       = time.time()
@@ -185,6 +189,14 @@ class ProgressCallback:
 
         if self._item_id:
             self._manager.update_progress(self._item_id, mb_done, speed_mbs)
+
+        # Throttled GUI log (max once per second)
+        if self._log_cb and (now - self._last_log_time) >= 1.0 and current_bytes != total_bytes:
+            self._log_cb(
+                f"↓ {mb_done:.1f} MB @ {speed_mbs:.1f} MB/s",
+                "download",
+            )
+            self._last_log_time = now
 
         self._last_time  = now
         self._last_bytes = current_bytes

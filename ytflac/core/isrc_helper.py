@@ -1,4 +1,3 @@
-from typing import Optional
 from .isrc_cache import get_cached_isrc, put_cached_isrc
 from ..providers.soundplate import SoundplateProvider
 from ..providers.songstats import SongstatsProvider

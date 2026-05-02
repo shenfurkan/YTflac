@@ -104,6 +104,14 @@ _STATUS_GLYPH = {
     STATUS_FAILED:  ("×",  S.ERROR),
 }
 
+_STATUS_TEXT = {
+    STATUS_IDLE: "",
+    STATUS_QUEUED: "Queued",
+    STATUS_RUNNING: "Downloading",
+    STATUS_DONE: "Downloaded",
+    STATUS_FAILED: "Failed",
+}
+
 
 class Spinner(QWidget):
     """Lightweight indeterminate spinner — small rotating arc."""
@@ -227,19 +235,24 @@ class TrackRow(QFrame):
         self._dur_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self._dur_lbl)
 
-        # Status — glyph label + spinner share the same slot
+        # Status — icon/spinner + explicit text label
         self._status_wrap = QWidget()
-        self._status_wrap.setFixedWidth(20)
+        self._status_wrap.setFixedWidth(112)
         sw = QHBoxLayout(self._status_wrap)
         sw.setContentsMargins(0, 0, 0, 0)
-        sw.setSpacing(0)
+        sw.setSpacing(6)
         sw.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._status_lbl = QLabel("·")
         self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._spinner = Spinner(14, S.ACCENT)
+        self._status_text_lbl = QLabel("")
+        self._status_text_lbl.setStyleSheet(
+            f"color: {S.TEXT_DIM}; font-size: 11px; background: transparent;"
+        )
         sw.addWidget(self._status_lbl)
         sw.addWidget(self._spinner)
+        sw.addWidget(self._status_text_lbl)
         layout.addWidget(self._status_wrap)
         self.set_status(STATUS_IDLE)
 
@@ -269,6 +282,30 @@ class TrackRow(QFrame):
 
     def set_status(self, status: str, tooltip: str = ""):
         glyph, color = _STATUS_GLYPH.get(status, _STATUS_GLYPH[STATUS_IDLE])
+        status_text = _STATUS_TEXT.get(status, "")
+
+        self.setProperty("dlState", status)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+        if status == STATUS_DONE:
+            self._status_text_lbl.setStyleSheet(
+                f"color: {S.SUCCESS}; font-size: 11px; font-weight: 600; background: transparent;"
+            )
+        elif status == STATUS_FAILED:
+            self._status_text_lbl.setStyleSheet(
+                f"color: {S.ERROR}; font-size: 11px; font-weight: 600; background: transparent;"
+            )
+        elif status == STATUS_RUNNING:
+            self._status_text_lbl.setStyleSheet(
+                f"color: {S.ACCENT}; font-size: 11px; font-weight: 600; background: transparent;"
+            )
+        else:
+            self._status_text_lbl.setStyleSheet(
+                f"color: {S.TEXT_DIM}; font-size: 11px; background: transparent;"
+            )
+        self._status_text_lbl.setText(status_text)
+
         if status == STATUS_RUNNING:
             self._status_lbl.setText("")
             self._status_lbl.hide()
@@ -285,12 +322,16 @@ class TrackRow(QFrame):
         if status == STATUS_FAILED:
             self._error_msg = tooltip or ""
             self._status_wrap.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._status_wrap.setToolTip("Click for details")
+            self._status_wrap.setToolTip("Failed — click for details")
         else:
             self._error_msg = ""
             self._status_wrap.setCursor(Qt.CursorShape.ArrowCursor)
             if tooltip:
                 self._status_wrap.setToolTip(tooltip)
+            elif status == STATUS_DONE:
+                self._status_wrap.setToolTip("Downloaded successfully")
+            elif status == STATUS_RUNNING:
+                self._status_wrap.setToolTip("Downloading")
             else:
                 self._status_wrap.setToolTip("")
 
@@ -372,7 +413,7 @@ class PlaylistHeader(QFrame):
             load_thumbnail(cover, 80, self._set_cover)
 
     def set_selection_count(self, n: int):
-        self._sel_badge.setText(f"{n} selected")
+        self._sel_badge.setText(f"{n} / {self._count} selected")
 
     def _set_cover(self, pm: QPixmap):
         self._cover.setPixmap(rounded_pixmap(pm, 10))

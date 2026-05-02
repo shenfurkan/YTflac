@@ -22,6 +22,13 @@ SUCCESS     = "#6dbf72"
 ERROR       = "#e06060"
 WARNING     = "#d4a055"
 
+LOG_INFO     = "#94a3b8"
+LOG_SUCCESS  = "#4ade80"
+LOG_ERROR    = "#f87171"
+LOG_WARNING  = "#fbbf24"
+LOG_API      = "#60a5fa"
+LOG_DOWNLOAD = "#a78bfa"
+
 FONT_STACK  = "'SF Pro Display', 'SF Pro Text', 'Inter', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif"
 
 
@@ -239,6 +246,19 @@ QFrame#row:hover {{
     border-radius: 6px;
 }}
 
+QFrame#row[dlState="running"] {{
+    background: rgba(79, 142, 247, 0.08);
+    border-radius: 6px;
+}}
+QFrame#row[dlState="done"] {{
+    background: rgba(109, 191, 114, 0.10);
+    border-radius: 6px;
+}}
+QFrame#row[dlState="failed"] {{
+    background: rgba(224, 96, 96, 0.10);
+    border-radius: 6px;
+}}
+
 QFrame#card {{
     background: {BG_ELEV};
     border: 1px solid {LINE};
@@ -346,5 +366,25 @@ QPushButton#danger {{
 QPushButton#danger:hover {{
     background: rgba(224, 96, 96, 0.18);
     border: 1px solid rgba(224, 96, 96, 0.45);
+}}
+
+/* Log Panel --------------------------------------------------------- */
+QTextEdit#logPanel {{
+    background: #0c0c10;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    padding: 10px;
+    color: {LOG_INFO};
+    font-family: 'SF Mono', 'Consolas', 'JetBrains Mono', monospace;
+    font-size: 11px;
+}}
+QTextEdit#logPanel QScrollBar:vertical {{
+    background: transparent;
+    width: 5px;
+}}
+QTextEdit#logPanel QScrollBar::handle:vertical {{
+    background: rgba(255,255,255,0.08);
+    border-radius: 2px;
+    min-height: 20px;
 }}
 """

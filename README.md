@@ -17,6 +17,9 @@ Get YouTube Music & Spotify tracks in true lossless FLAC from Tidal, Qobuz, Deez
 - **Metadata enrichment** — BPM, genre, label, cover art from multiple sources
 - **MusicBrainz tagging** — automatic professional-grade tags
 - **FLAC validation** — detects previews and corrupt downloads
+- **Second-pass match verification** — re-checks uncertain playlist matches before download
+- **Final failed-track retry** — automatically retries failed songs once after queue completion
+- **Keep-screen-awake during batches** — prevents sleep/display-off while playlist downloads run on Windows
 
 ---
 

@@ -8,7 +8,6 @@ import time
 from typing import Any
 
 import requests
-from mutagen.flac import FLAC
 
 from ..core.models import TrackMetadata, DownloadResult
 from ..core.errors import SpotiflacError
@@ -313,7 +312,11 @@ class DeezerProvider(BaseProvider):
             enrich_providers:        list[str] | None = None,
             **kwargs,
     ) -> DownloadResult:
+        if self._log_cb:
+            self._log_cb("Deezer: checking ISRC…", "api")
         if not metadata.isrc:
+            if self._log_cb:
+                self._log_cb("Deezer: no ISRC available", "error")
             return DownloadResult.fail(self.name, "No ISRC available for Deezer")
 
         try:
@@ -322,12 +325,16 @@ class DeezerProvider(BaseProvider):
                 position, include_track_num, use_album_track_num, first_artist_only,
             )
             if self._file_exists(dest):
+                if self._log_cb:
+                    self._log_cb("Skipped — already exists", "warning")
                 return DownloadResult.ok(self.name, str(dest))
 
             # Avvia MusicBrainz in parallelo mentre si scarica
             from ..core.musicbrainz import AsyncMBFetch
             mb_fetcher = AsyncMBFetch(metadata.isrc) if metadata.isrc else None
 
+            if self._log_cb:
+                self._log_cb("Deezer: downloading FLAC…", "download")
             before     = self._snapshot(output_dir)
             downloaded = self._download_flac_raw(metadata.isrc, output_dir)
 
@@ -341,6 +348,8 @@ class DeezerProvider(BaseProvider):
                 import shutil
                 os.makedirs(os.path.dirname(str(dest)), exist_ok=True)
                 shutil.move(downloaded, str(dest))
+            if self._log_cb:
+                self._log_cb("Deezer: file saved", "success")
 
             # ── MusicBrainz tags ──────────────────────────────────────────
             mb_tags: dict[str, str] = {}
@@ -395,6 +404,8 @@ class DeezerProvider(BaseProvider):
                 enrich                  = enrich_metadata,
                 enrich_providers        = enrich_providers,
             )
+            if self._log_cb:
+                self._log_cb("Deezer: metadata embedded", "success")
 
             return DownloadResult.ok(self.name, str(dest))
 

@@ -26,7 +26,7 @@ from ..core.errors import (
     TrackNotFoundError, ParseError,
     SpotiflacError, ErrorKind,
 )
-from ..core.http import HttpClient, RetryConfig
+from ..core.http import RetryConfig
 from ..core.models import TrackMetadata, DownloadResult
 from ..core.musicbrainz import AsyncMBFetch
 from ..core.tagger import embed_metadata
@@ -527,7 +527,7 @@ class TidalProvider(BaseProvider):
     # ------------------------------------------------------------------
 
     def _get_download_url(self, track_id: int, quality: str) -> str:
-        from ..core.provider_stats import prioritize_providers, record_success, record_failure
+        from ..core.provider_stats import prioritize_providers, record_success
 
         try:
             rotated = get_rotated_tidal_api_list()
@@ -650,10 +650,14 @@ class TidalProvider(BaseProvider):
             enrich_providers:        list[str] | None = None,
     ) -> DownloadResult:
         try:
+            if self._log_cb:
+                self._log_cb("Tidal: resolving Spotify → Tidal URL…", "api")
             tidal_url = self.resolve_spotify_to_tidal(
                 metadata.id, metadata.title, metadata.artists
             )
             track_id = self._parse_track_id(tidal_url)
+            if self._log_cb:
+                self._log_cb("Tidal: URL resolved", "success")
 
             mb_fetcher = None
             if metadata.isrc:
@@ -664,6 +668,8 @@ class TidalProvider(BaseProvider):
                 position, include_track_num, use_album_track_num, first_artist_only,
             )
             if self._file_exists(dest):
+                if self._log_cb:
+                    self._log_cb("Skipped — already exists", "warning")
                 return DownloadResult.ok(self.name, str(dest))
 
             dl_url = (
@@ -671,12 +677,16 @@ class TidalProvider(BaseProvider):
                 if allow_fallback
                 else self._get_download_url(track_id, quality)
             )
+            if self._log_cb:
+                self._log_cb(f"Tidal: found {quality} — downloading", "success")
 
             self._download_file(dl_url, dest)
 
             expected_s = metadata.duration_ms // 1000
             valid, err_msg = validate_downloaded_track(str(dest), expected_s)
             if not valid:
+                if self._log_cb:
+                    self._log_cb("Tidal: download validation failed (corrupt/preview)", "error")
                 raise SpotiflacError(ErrorKind.UNAVAILABLE, err_msg, self.name)
 
             mb_tags = {}
@@ -731,6 +741,8 @@ class TidalProvider(BaseProvider):
                 enrich_providers        = enrich_providers,
                 enrich_qobuz_token      = self._qobuz_token or "",
             )
+            if self._log_cb:
+                self._log_cb("Tidal: metadata & lyrics embedded", "success")
             return DownloadResult.ok(self.name, str(dest))
 
         except SpotiflacError as exc:

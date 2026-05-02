@@ -325,13 +325,19 @@ class AmazonProvider(BaseProvider):
                 position, include_track_num, use_album_track_num, first_artist_only,
             )
             if self._file_exists(dest):
+                if self._log_cb:
+                    self._log_cb("Skipped — already exists", "warning")
                 return DownloadResult.ok(self.name, str(dest))
 
             # Avvia MusicBrainz in parallelo mentre il file viene scaricato
             from ..core.musicbrainz import AsyncMBFetch
             mb_fetcher = AsyncMBFetch(metadata.isrc) if metadata.isrc else None
 
+            if self._log_cb:
+                self._log_cb("Amazon: resolving track URL…", "api")
             amazon_url = self._get_amazon_url(metadata.id)
+            if self._log_cb:
+                self._log_cb("Amazon: downloading…", "download")
             downloaded = self._download_from_api(amazon_url, output_dir, quality)
 
             ext      = os.path.splitext(downloaded)[1] or ".m4a"
@@ -397,7 +403,11 @@ class AmazonProvider(BaseProvider):
                     enrich                  = enrich_metadata,
                     enrich_providers        = enrich_providers,
                 )
+                if self._log_cb:
+                    self._log_cb("Amazon: tags written", "success")
             else:
+                if self._log_cb:
+                    self._log_cb("Amazon: downloaded M4A (FLAC unavailable)", "warning")
                 # Fallback .m4a: tag base senza enrich/lyrics
                 track_num    = position
                 if use_album_track_num and _safe_int(metadata.track_number) > 0:

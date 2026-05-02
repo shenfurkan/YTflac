@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget, QWidget,
+    QDialog, QVBoxLayout, QFormLayout, QTabWidget, QWidget,
     QLineEdit, QCheckBox, QSpinBox, QDoubleSpinBox, QComboBox, QLabel,
-    QPushButton, QDialogButtonBox, QGroupBox, QListWidget, QListWidgetItem,
+    QPushButton, QDialogButtonBox, QListWidget, QListWidgetItem,
     QAbstractItemView, QFrame, QFileDialog,
 )
 
@@ -282,7 +282,7 @@ class SettingsDialog(QDialog):
         self._delay_spin.setSingleStep(0.5)
         self._delay_spin.setSuffix(" s")
         self._delay_spin.setDecimals(1)
-        self._delay_spin.setValue(self._settings.value("inter_track_delay_s", 0.5, type=float))
+        self._delay_spin.setValue(self._settings.value("inter_track_delay_s", 0.0, type=float))
         form.addRow("Inter-track delay", self._delay_spin)
 
         self._loglevel_combo = QComboBox()
@@ -295,19 +295,19 @@ class SettingsDialog(QDialog):
         self._cd_every_spin.setRange(0, 500)
         self._cd_every_spin.setSpecialValueText("disabled")
         self._cd_every_spin.setSuffix(" tracks")
-        self._cd_every_spin.setValue(self._settings.value("cooldown_every", 20, type=int))
+        self._cd_every_spin.setValue(self._settings.value("cooldown_every", 0, type=int))
         form.addRow("Cooldown every", self._cd_every_spin)
 
         self._cd_secs_spin = QSpinBox()
         self._cd_secs_spin.setRange(0, 600)
         self._cd_secs_spin.setSuffix(" s")
-        self._cd_secs_spin.setValue(self._settings.value("cooldown_seconds", 30, type=int))
+        self._cd_secs_spin.setValue(self._settings.value("cooldown_seconds", 0, type=int))
         form.addRow("Cooldown duration", self._cd_secs_spin)
 
         hint = QLabel(
             "Cooldown pauses downloads after every N tracks to avoid rate limits "
             "on Tidal/Qobuz. Auto-skipped on small batches.\n"
-            "Note: log level applies on next launch."
+            "Default is disabled for maximum speed. Note: log level applies on next launch."
         )
         hint.setObjectName("faint")
         hint.setWordWrap(True)
@@ -374,10 +374,12 @@ class SettingsDialog(QDialog):
         self._cb_enrich.setChecked(True)
         self._cb_lyrics.setChecked(False)
         self._cb_fallback.setChecked(True)
-        self._delay_spin.setValue(0.5)
+        self._delay_spin.setValue(0.0)
         self._loglevel_combo.setCurrentText("WARNING")
         self._qobuz_input.setText("")
         self._spot_token_input.setText("")
+        self._cd_every_spin.setValue(0)
+        self._cd_secs_spin.setValue(0)
 
 
 def load_options_kwargs(settings: QSettings) -> dict:
@@ -390,7 +392,7 @@ def load_options_kwargs(settings: QSettings) -> dict:
         "use_album_subfolders":    settings.value("use_album_subfolders", False, type=bool),
         "first_artist_only":       settings.value("first_artist_only", False, type=bool),
         "allow_fallback":          settings.value("allow_fallback", True, type=bool),
-        "inter_track_delay_s":     settings.value("inter_track_delay_s", 0.5, type=float),
+        "inter_track_delay_s":     settings.value("inter_track_delay_s", 0.0, type=float),
         "embed_lyrics":            settings.value("embed_lyrics", False, type=bool),
         "lyrics_providers":        settings.value("lyrics_providers", LYRICS_ALL, type=list) or LYRICS_ALL,
         "lyrics_spotify_token":    settings.value("lyrics_spotify_token", "", type=str),

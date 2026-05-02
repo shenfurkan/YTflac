@@ -8,7 +8,7 @@ quelle che funzionano vengono promosse in cima — senza shuffle casuale.
 from __future__ import annotations
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .errors import ErrorKind
 
@@ -120,20 +120,20 @@ class ProviderScorer:
 
             # Immediate opens for clearly non-transient failures
             if kind == ErrorKind.AUTH_FAILED:
-                c.opened_until = max(c.opened_until, now + 300)  # 5 min
+                c.opened_until = max(c.opened_until, now + 30)  # 30s
                 return
             if kind == ErrorKind.RATE_LIMITED:
-                c.opened_until = max(c.opened_until, now + 120)  # 2 min
+                c.opened_until = max(c.opened_until, now + 20)  # 20s
                 return
 
             # Network/unavailable failures: open only after repeated failures
             if kind in {ErrorKind.NETWORK_ERROR, ErrorKind.UNAVAILABLE} and c.consecutive_failures >= 3:
-                c.opened_until = max(c.opened_until, now + 90)  # 1.5 min
+                c.opened_until = max(c.opened_until, now + 10)  # 10s
                 return
 
             # Parsing failures tend to be persistent until update
             if kind == ErrorKind.PARSE_ERROR and c.consecutive_failures >= 2:
-                c.opened_until = max(c.opened_until, now + 180)  # 3 min
+                c.opened_until = max(c.opened_until, now + 15)  # 15s
 
     def provider_cooldown_remaining(self, provider_type: str) -> int:
         with self._stats_lock:

@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import NamedTuple
 from urllib.parse import urlparse, parse_qs, quote
 
@@ -239,7 +239,7 @@ def _fetch_playlist_via_api(playlist_id: str, http: HttpClient | None = None) ->
     
     while True:
         # YouTube Data API endpoint for playlist items
-        api_url = f"https://www.googleapis.com/youtube/v3/playlistItems"
+        api_url = "https://www.googleapis.com/youtube/v3/playlistItems"
         params = {
             "part": "contentDetails",
             "playlistId": playlist_id,
@@ -273,7 +273,7 @@ def _fetch_playlist_title_via_api(playlist_id: str, http: HttpClient | None = No
     """Fetch playlist title using YouTube Data API."""
     http = http or _build_http()
     
-    api_url = f"https://www.googleapis.com/youtube/v3/playlists"
+    api_url = "https://www.googleapis.com/youtube/v3/playlists"
     params = {
         "part": "snippet",
         "id": playlist_id,
@@ -644,33 +644,139 @@ def pick_best_match(
     best_score = -1000
 
     for c in candidates:
-        score = 0
-        name = _normalize_text(c.name)
-        artists = _normalize_text(c.artists)
-
-        if track_needle:
-            if name == track_needle:
-                score += 4
-            elif track_needle in name:
-                score += 2
-
-        if artist_needle:
-            if artist_needle in artists:
-                score += 3
-            elif artists in artist_needle:
-                score += 1
-
-        if _levenshtein(name, track_needle) <= 2:
-            score += 2
-
-        if _has_variant_keyword(c.name) and not _has_variant_keyword(raw_title):
-            score -= 3
+        score = _score_candidate(c, track_needle, artist_needle, raw_title)
 
         if score > best_score:
             best = c
             best_score = score
 
     return best
+
+
+def _score_candidate(
+    candidate: _SearchCandidate,
+    track_needle: str,
+    artist_needle: str,
+    raw_title: str,
+) -> int:
+    score = 0
+    name = _normalize_text(candidate.name)
+    artists = _normalize_text(candidate.artists)
+
+    if track_needle:
+        if name == track_needle:
+            score += 4
+        elif track_needle in name or name in track_needle:
+            score += 2
+
+    if artist_needle:
+        if artist_needle in artists:
+            score += 3
+        elif artists in artist_needle:
+            score += 1
+
+    if track_needle and _levenshtein(name, track_needle) <= 2:
+        score += 2
+
+    if _has_variant_keyword(candidate.name) and not _has_variant_keyword(raw_title):
+        score -= 3
+
+    return score
+
+
+def _artist_overlap_ratio(a: str, b: str) -> float:
+    a_tokens = {t for t in _normalize_text(a).split() if len(t) > 1}
+    b_tokens = {t for t in _normalize_text(b).split() if len(t) > 1}
+    if not a_tokens or not b_tokens:
+        return 0.0
+    inter = len(a_tokens & b_tokens)
+    return inter / max(len(a_tokens), len(b_tokens))
+
+
+def _is_confident_match(
+    candidate: _SearchCandidate,
+    wanted_track: str,
+    wanted_artist: str,
+    raw_title: str,
+) -> bool:
+    track_needle = _normalize_text(wanted_track)
+    artist_needle = _normalize_text(wanted_artist)
+    name = _normalize_text(candidate.name)
+
+    score = _score_candidate(candidate, track_needle, artist_needle, raw_title)
+    if score < 4:
+        return False
+
+    if track_needle:
+        max_dist = max(2, len(track_needle) // 3)
+        if _levenshtein(name, track_needle) > max_dist:
+            return False
+
+    if wanted_artist:
+        if _artist_overlap_ratio(candidate.artists, wanted_artist) < 0.34:
+            return False
+
+    return True
+
+
+def _secondary_verify_match(
+    spotify_client,
+    wanted_track: str,
+    wanted_artist: str,
+    raw_title: str,
+    raw_artist: str,
+) -> _SearchCandidate | None:
+    queries: list[str] = []
+    seen_q: set[str] = set()
+
+    def _add_query(value: str) -> None:
+        value = value.strip()
+        if not value:
+            return
+        key = value.lower()
+        if key in seen_q:
+            return
+        seen_q.add(key)
+        queries.append(value)
+
+    primary_artist = _split_primary_artist(wanted_artist or raw_artist)
+    _add_query(_build_field_query(wanted_track, primary_artist))
+    _add_query(_build_field_query(wanted_track, wanted_artist))
+    _add_query(_build_plain_query(wanted_track, primary_artist))
+    _add_query(_build_plain_query(wanted_track, wanted_artist))
+
+    alt_track, alt_artist = clean_yt_title_artist(raw_title, raw_artist)
+    _add_query(_build_field_query(alt_track, _split_primary_artist(alt_artist)))
+    _add_query(_build_plain_query(alt_track, alt_artist))
+    _add_query(raw_title)
+
+    candidates: list[_SearchCandidate] = []
+    seen_ids: set[str] = set()
+    for query in queries:
+        try:
+            items = spotify_client.search_tracks(query, limit=12)
+        except Exception as exc:
+            logger.debug("[youtube_input] Secondary search failed for %r: %s", query, exc)
+            continue
+
+        for item in items:
+            c = _candidate_from_spotify_item(item)
+            if not c.track_id or c.track_id in seen_ids:
+                continue
+            seen_ids.add(c.track_id)
+            candidates.append(c)
+
+    if not candidates:
+        return None
+
+    best = pick_best_match(candidates, wanted_track or alt_track, wanted_artist or alt_artist, raw_title)
+    if not best:
+        return None
+
+    if _is_confident_match(best, wanted_track or alt_track, wanted_artist or alt_artist, raw_title):
+        return best
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -733,14 +839,24 @@ def resolve_spotify_from_yt(
         if len(candidates) >= 20:
             break
 
+    best: _SearchCandidate | None = None
     if not candidates:
         logger.info("[youtube_input] No Spotify match for %r", _build_plain_query(track, artist))
-        return None, ctx
+    else:
+        # 4. Pick best
+        best = pick_best_match(candidates, track, artist, raw_title)
 
-    # 4. Pick best
-    best = pick_best_match(candidates, track, artist, raw_title)
-    if not best or not best.track_id:
-        return None, ctx
+    if not best or not best.track_id or not _is_confident_match(best, track, artist, raw_title):
+        verified = _secondary_verify_match(
+            spotify_client,
+            track,
+            artist,
+            raw_title,
+            raw_author,
+        )
+        if not verified:
+            return None, ctx
+        best = verified
 
     # 5. Fetch full TrackMetadata via existing SpotifyMetadataClient
     try:
@@ -885,12 +1001,21 @@ def _resolve_spotify_from_yt_meta(
         if len(candidates) >= 20:
             break
 
-    if not candidates:
-        return None, ctx
+    best: _SearchCandidate | None = None
+    if candidates:
+        best = pick_best_match(candidates, track, artist, raw_title)
 
-    best = pick_best_match(candidates, track, artist, raw_title)
-    if not best or not best.track_id:
-        return None, ctx
+    if not best or not best.track_id or not _is_confident_match(best, track, artist, raw_title):
+        verified = _secondary_verify_match(
+            spotify_client,
+            track,
+            artist,
+            raw_title,
+            raw_author,
+        )
+        if not verified:
+            return None, ctx
+        best = verified
 
     try:
         metadata = spotify_client.get_track(best.track_id)

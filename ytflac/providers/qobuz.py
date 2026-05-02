@@ -16,10 +16,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import requests
 
 from ..core.errors import (
-    AuthError, TrackNotFoundError, NetworkError,
+    TrackNotFoundError, NetworkError,
     ParseError, SpotiflacError, ErrorKind,
 )
-from ..core.http import HttpClient, RetryConfig
+from ..core.http import RetryConfig
 from ..core.models import TrackMetadata, DownloadResult
 from ..core.tagger import embed_metadata
 from ..core.provider_stats import record_success, record_failure, prioritize_providers
@@ -582,7 +582,11 @@ class QobuzProvider(BaseProvider):
         quality = _TIDAL_TO_QOBUZ_QUALITY.get(quality, quality)
 
         try:
+            if self._log_cb:
+                self._log_cb("Qobuz: searching by ISRC…", "api")
             if not metadata.isrc:
+                if self._log_cb:
+                    self._log_cb("Qobuz: no ISRC available", "error")
                 raise TrackNotFoundError(self.name, "no ISRC provided")
 
             mb_fetcher = None
@@ -592,16 +596,26 @@ class QobuzProvider(BaseProvider):
             track    = self._search_by_isrc(metadata.isrc)
             track_id = track.get("id")
             if not track_id:
+                if self._log_cb:
+                    self._log_cb("Qobuz: track not found", "error")
                 raise TrackNotFoundError(self.name, metadata.isrc)
+            if self._log_cb:
+                self._log_cb("Qobuz: track found", "success")
 
             dest = self._build_output_path(
                 metadata, output_dir, filename_format,
                 position, include_track_num, use_album_track_num, first_artist_only,
             )
             if self._file_exists(dest):
+                if self._log_cb:
+                    self._log_cb("Skipped — already exists", "warning")
                 return DownloadResult.ok(self.name, str(dest))
 
+            if self._log_cb:
+                self._log_cb(f"Qobuz: requesting stream ({quality})…", "api")
             stream_url = self._get_stream_url(track_id, quality, allow_fallback)
+            if self._log_cb:
+                self._log_cb("Qobuz: stream URL ready", "success")
             self._http.stream_to_file(stream_url, str(dest), self._progress_cb)
 
             expected_s = metadata.duration_ms // 1000
@@ -659,6 +673,8 @@ class QobuzProvider(BaseProvider):
                 enrich_providers        = enrich_providers,
                 enrich_qobuz_token      = self._qobuz_token or "",
             )
+            if self._log_cb:
+                self._log_cb("Qobuz: tags & lyrics written", "success")
             return DownloadResult.ok(self.name, str(dest))
 
         except SpotiflacError as exc:

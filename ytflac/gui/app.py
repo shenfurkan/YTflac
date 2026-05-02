@@ -9,12 +9,11 @@ import logging
 from datetime import datetime
 
 from PyQt6.QtCore import Qt, QSettings, QTimer
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QIcon, QPixmap, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QLabel, QScrollArea, QFileDialog,
-    QStackedWidget, QMessageBox, QSizePolicy, QComboBox, QDialog,
-    QProgressBar, QFrame, QTextEdit, QDialogButtonBox,
+    QLineEdit, QPushButton, QLabel, QScrollArea, QStackedWidget, QMessageBox, QComboBox, QDialog,
+    QProgressBar, QFrame, QTextEdit,
 )
 
 from ..providers.spotify_metadata import SpotifyMetadataClient
@@ -30,6 +29,52 @@ from . import style as S
 
 
 SERVICES_ALL = ["tidal", "qobuz", "amazon", "deezer"]
+
+
+# ---------------------------------------------------------------------------
+# Live log panel — read-only, colour-coded, auto-scrolling
+# ---------------------------------------------------------------------------
+
+class LogPanel(QTextEdit):
+    """Read-only, colour-coded, auto-scrolling log with a 500-line ceiling."""
+
+    _MAX_LINES = 500
+
+    _COLOURS = {
+        "info":     S.LOG_INFO,
+        "success":  S.LOG_SUCCESS,
+        "error":    S.LOG_ERROR,
+        "warning":  S.LOG_WARNING,
+        "api":      S.LOG_API,
+        "download": S.LOG_DOWNLOAD,
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("logPanel")
+        self.setReadOnly(True)
+        self.setMinimumHeight(140)
+        self.setMaximumHeight(260)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+
+    def append(self, text: str, level: str = "info") -> None:
+        colour = self._COLOURS.get(level, S.LOG_INFO)
+        ts = datetime.now().strftime("%H:%M:%S")
+        html = f'<span style="color:{colour}">[{ts}] {text}</span>'
+        super().append(html)
+        # Trim oldest lines if ceiling exceeded
+        doc = self.document()
+        if doc.blockCount() > self._MAX_LINES:
+            cursor = QTextCursor(doc.firstBlock())
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+        # Auto-scroll
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def clear(self) -> None:
+        super().clear()
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +322,6 @@ def _setup_debug_logging():
         logging.warning(f"✗ HistoryManager failed: {e}")
     
     try:
-        from ..core.isrc_cache import get_cached_isrc, put_cached_isrc
         logging.info("✓ ISRC cache functions loaded")
     except Exception as e:
         logging.warning(f"✗ ISRC cache failed: {e}")
@@ -440,6 +484,23 @@ class SpotiflacApp(QMainWindow):
         self._progress_bar.setVisible(False)
         col.addWidget(self._progress_bar)
 
+        # --- Live log panel ---
+        log_header = QHBoxLayout()
+        log_lbl = QLabel("Activity")
+        log_lbl.setObjectName("section")
+        log_header.addWidget(log_lbl)
+        log_header.addStretch()
+        clear_btn = QPushButton("Clear")
+        clear_btn.setObjectName("ghost")
+        clear_btn.setFixedHeight(22)
+        clear_btn.setStyleSheet("font-size: 10px; padding: 2px 8px;")
+        log_header.addWidget(clear_btn)
+        col.addLayout(log_header)
+
+        self._log_panel = LogPanel()
+        clear_btn.clicked.connect(self._log_panel.clear)
+        col.addWidget(self._log_panel, stretch=1)
+
         # --- Status + actions (bottom) ---
         self._status_lbl = QLabel("")
         self._status_lbl.setObjectName("muted")
@@ -550,10 +611,15 @@ class SpotiflacApp(QMainWindow):
         self._select_btn.setObjectName("ghost")
         self._select_btn.clicked.connect(self._toggle_all)
 
+        self._invert_btn = QPushButton("Invert")
+        self._invert_btn.setObjectName("ghost")
+        self._invert_btn.clicked.connect(self._invert_selection)
+
         sel_row = QHBoxLayout()
         sel_row.setSpacing(8)
         sel_row.addWidget(self._search_input, stretch=1)
         sel_row.addWidget(self._select_btn)
+        sel_row.addWidget(self._invert_btn)
         rl.addLayout(sel_row)
 
         scroll = QScrollArea()
@@ -586,9 +652,13 @@ class SpotiflacApp(QMainWindow):
         self._clear_results()
         self._status_lbl.setText("Fetching playlist… (large playlists may take ~30s)")
 
+        if hasattr(self, "_log_panel") and self._log_panel:
+            self._log_panel.clear()
+
         self._resolve_worker = ResolveWorker(url, self._spotify, self)
         self._resolve_worker.finished.connect(self._on_resolve_done)
         self._resolve_worker.error.connect(self._on_resolve_error)
+        self._resolve_worker.log_message.connect(self._on_log_message)
         self._resolve_worker.start()
 
     def _on_resolve_done(self, result):
@@ -617,6 +687,23 @@ class SpotiflacApp(QMainWindow):
 
         self._search_input.clear()
         self._stack.setCurrentIndex(1)
+        self._update_dl_button()
+        self._update_select_btn()
+        self._update_header_count()
+
+    def _invert_selection(self):
+        # Operate only on currently visible (filtered) rows
+        visible = [r for r in self._rows if r.isVisible()]
+        if not visible:
+            visible = self._rows
+        for row in visible:
+            i = row.index() - 1
+            now = row.is_checked()
+            row.set_checked(not now)
+            if now:
+                self._selected.discard(i)
+            else:
+                self._selected.add(i)
         self._update_dl_button()
         self._update_select_btn()
         self._update_header_count()
@@ -713,6 +800,7 @@ class SpotiflacApp(QMainWindow):
         self._url_input.setEnabled(False)
         self._search_input.setEnabled(False)
         self._select_btn.setEnabled(False)
+        self._invert_btn.setEnabled(False)
 
         # Show progress bar
         total = len(self._selected)
@@ -734,8 +822,12 @@ class SpotiflacApp(QMainWindow):
         )
         indices = sorted(self._selected)
 
-        cd_every = self._settings.value("cooldown_every", 20, type=int)
-        cd_secs  = self._settings.value("cooldown_seconds", 30, type=int)
+        cd_every = self._settings.value("cooldown_every", 0, type=int)
+        cd_secs  = self._settings.value("cooldown_seconds", 0, type=int)
+        # Legacy migration: historical defaults (20/30) were too slow for typical use.
+        if cd_every == 20 and cd_secs == 30:
+            cd_every = 0
+            cd_secs = 0
 
         self._dl_worker = GUIDownloadWorker(
             tracks           = self._result.tracks,
@@ -752,9 +844,14 @@ class SpotiflacApp(QMainWindow):
         self._dl_worker.track_failed.connect(self._on_track_failed)
         self._dl_worker.progress.connect(self._on_progress)
         self._dl_worker.cooldown.connect(self._on_cooldown)
+        self._dl_worker.log_message.connect(self._on_log_message)
         self._dl_worker.finished.connect(self._on_dl_done)
         self._dl_worker.error.connect(self._on_dl_error)
         self._dl_worker.start()
+
+    def _on_log_message(self, text: str, level: str):
+        if hasattr(self, "_log_panel") and self._log_panel:
+            self._log_panel.append(text, level)
 
     def _on_stop(self):
         if self._dl_worker is None:
@@ -817,6 +914,7 @@ class SpotiflacApp(QMainWindow):
         self._url_input.setEnabled(True)
         self._search_input.setEnabled(True)
         self._select_btn.setEnabled(True)
+        self._invert_btn.setEnabled(True)
         self._progress_bar.setVisible(False)
         self._update_dl_button()
         msg = f"Done  ·  {succeeded} succeeded"
@@ -843,6 +941,7 @@ class SpotiflacApp(QMainWindow):
         self._url_input.setEnabled(True)
         self._search_input.setEnabled(True)
         self._select_btn.setEnabled(True)
+        self._invert_btn.setEnabled(True)
         self._progress_bar.setVisible(False)
         self._update_dl_button()
         self._status_lbl.setText("")

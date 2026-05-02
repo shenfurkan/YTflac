@@ -5,11 +5,11 @@ Run with:  uvicorn SpotiFLAC.api.server:app --reload --port 8787
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import threading
 from queue import Queue, Empty
-from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +22,7 @@ from ..providers.youtube_input import is_youtube_url, resolve_youtube_input
 from ..downloader import DownloadOptions, DownloadWorker
 from ..core.models import TrackMetadata
 from .jobs import JobManager, JobState
+from ..system_awake import keep_awake
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,9 @@ def start_download(req: DownloadRequest):
                 collection_name=collection_name,
                 is_playlist=is_playlist,
             )
-            failed = worker.run()
+            keep_awake_enabled = is_playlist or len(tracks) > 1
+            with keep_awake(display=True) if keep_awake_enabled else contextlib.nullcontext():
+                failed = worker.run()
             job.succeeded = len(tracks) - len(failed)
             job.failed = len(failed)
             job.errors = [

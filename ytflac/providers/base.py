@@ -4,7 +4,6 @@ Implementa il pattern Protocol/Interface di Go.
 """
 from __future__ import annotations
 import logging
-import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
@@ -37,9 +36,13 @@ class BaseProvider(ABC):
             headers   = headers,
         )
         self._progress_cb: Callable[[int, int], None] | None = None
+        self._log_cb: Callable[[str, str], None] | None = None
 
     def set_progress_callback(self, cb: Callable[[int, int], None]) -> None:
         self._progress_cb = cb
+
+    def set_log_callback(self, cb: Callable[[str, str], None] | None) -> None:
+        self._log_cb = cb
 
     # ------------------------------------------------------------------
     # Interface methods — subclasses must implement
@@ -113,11 +116,18 @@ class BaseProvider(ABC):
         invece di propagare eccezioni — equivalente al pattern Go
         `if err != nil { return err }`.
         """
+        log_cb = self._log_cb
+        if log_cb:
+            log_cb(f"{self.name}: starting search…", "api")
         try:
             return self.download_track(metadata, output_dir, **kwargs)
         except SpotiflacError as exc:
             logger.error("[%s] %s", self.name, exc)
+            if log_cb:
+                log_cb(f"{self.name} error: {exc}", "error")
             return DownloadResult.fail(self.name, str(exc))
         except Exception as exc:
             logger.exception("[%s] Unexpected error", self.name)
+            if log_cb:
+                log_cb(f"{self.name} unexpected error: {exc}", "error")
             return DownloadResult.fail(self.name, f"Unexpected: {exc}")

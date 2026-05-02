@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional
+from typing import Dict
 from .http import HttpClient
 
 logger = logging.getLogger(__name__)

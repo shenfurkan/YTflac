@@ -3,7 +3,6 @@ Debug test suite for YtFLAC engine.
 Tests unused debug functions and modules.
 """
 import sys
-import os
 import time
 import json
 from pathlib import Path
@@ -11,7 +10,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ytflac.core.progress import DownloadManager, ProgressCallback, DownloadStatus
+from ytflac.core.progress import DownloadManager, ProgressCallback
 from ytflac.core.console import print_track_header, print_source_banner, print_summary
 from ytflac.core.provider_stats import ProviderScorer, record_success, record_failure, prioritize
 from ytflac.core.history import HistoryManager

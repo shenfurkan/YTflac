@@ -4,17 +4,16 @@ Downloader — orchestratore principale.
 from __future__ import annotations
 import logging
 import os
-import random
 import re
 import time
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import Callable
 
 from .core.models import TrackMetadata, DownloadResult
 from .core.progress import DownloadManager, ProgressCallback
 from .core.errors import ErrorKind, SpotiflacError, classify_error
-from .core.console import print_track_header, print_source_banner, print_summary, print_api_failure, print_quality_fallback
+from .core.console import print_track_header, print_summary
 from .core.provider_stats import (
     is_provider_open,
     prioritize,
@@ -34,6 +33,29 @@ logger = logging.getLogger(__name__)
 
 # Initialize debug modules
 _history_manager = HistoryManager()
+
+
+def _record_download_history(
+    *,
+    metadata: TrackMetadata,
+    provider: str,
+    success: bool,
+    file_path: str,
+) -> None:
+    """Best-effort history write; must never affect download outcome."""
+    try:
+        add_download = getattr(_history_manager, "add_download", None)
+        if callable(add_download):
+            add_download(
+                track_id=metadata.id,
+                track_name=metadata.title,
+                artist_name=metadata.artists,
+                provider=provider,
+                success=success,
+                file_path=file_path,
+            )
+    except Exception as exc:
+        logger.debug("[history] failed to record download event: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -68,13 +90,11 @@ def _log_failure(metadata: "TrackMetadata", per_provider_errors: dict[str, str])
 
 
 def _retryable_provider_failure(kind: ErrorKind) -> bool:
-    return kind in {ErrorKind.NETWORK_ERROR, ErrorKind.RATE_LIMITED, ErrorKind.UNAVAILABLE}
+    return kind in {ErrorKind.NETWORK_ERROR, ErrorKind.UNAVAILABLE}
 
 
 def _provider_retry_cap(kind: ErrorKind) -> int:
     # Keep retries conservative: avoid hammering unstable endpoints.
-    if kind == ErrorKind.RATE_LIMITED:
-        return 3
     if kind == ErrorKind.NETWORK_ERROR:
         return 2
     if kind == ErrorKind.UNAVAILABLE:
@@ -83,10 +103,8 @@ def _provider_retry_cap(kind: ErrorKind) -> int:
 
 
 def _retry_sleep_seconds(attempt: int) -> float:
-    # Exponential backoff with jitter.
-    base = min(6.0, 0.8 * (2 ** (attempt - 1)))
-    jitter = random.uniform(0.0, 0.6)
-    return base + jitter
+    # No delay: retry immediately for speed.
+    return 0.0
 
 
 def _order_providers_for_track(providers: list[BaseProvider]) -> list[BaseProvider]:
@@ -176,11 +194,12 @@ def _build_provider(name: str, opts: DownloadOptions) -> BaseProvider | None:
 
 
 def download_one(
-        metadata:   TrackMetadata,
-        output_dir: str,
-        providers:  list[BaseProvider],
-        opts:       DownloadOptions,
-        position:   int = 1,
+        metadata:     TrackMetadata,
+        output_dir:   str,
+        providers:    list[BaseProvider],
+        opts:         DownloadOptions,
+        position:     int = 1,
+        log_callback: Callable[[str, str], None] | None = None,
 ) -> DownloadResult:
     errors: dict[str, str] = {}
     manager = DownloadManager()
@@ -201,11 +220,16 @@ def download_one(
             msg = f"circuit open ({cooldown}s cooldown remaining)"
             errors[provider.name] = msg
             logger.info("[%s] Skipped for %s — %s: %s", provider.name, metadata.artists, metadata.title, msg)
+            if log_callback:
+                log_callback(f"{provider.name} skipped (cooldown {cooldown}s)", "warning")
             continue
 
         logger.info("[%s] Trying: %s — %s", provider.name, metadata.artists, metadata.title)
+        if log_callback:
+            log_callback(f"Trying {provider.name}…", "api")
+            provider.set_log_callback(log_callback)
 
-        cb = ProgressCallback(item_id=metadata.id)
+        cb = ProgressCallback(item_id=metadata.id, log_callback=log_callback)
         provider.set_progress_callback(cb)
 
         attempt = 1
@@ -230,14 +254,14 @@ def download_one(
 
             if result.success:
                 logger.info("[%s] ✓ %s — %s", provider.name, metadata.artists, metadata.title)
+                if log_callback:
+                    log_callback(f"{provider.name} found track — downloading", "success")
                 record_success(provider.name, getattr(provider, "_last_api_url", "unknown"))
                 record_success("provider_fallback", provider.name)
                 record_provider_success(provider.name)
 
-                _history_manager.add_download(
-                    track_id=metadata.id,
-                    track_name=metadata.title,
-                    artist_name=metadata.artists,
+                _record_download_history(
+                    metadata=metadata,
                     provider=provider.name,
                     success=True,
                     file_path=result.file_path,
@@ -251,6 +275,8 @@ def download_one(
             kind = classify_error(err)
             errors[provider.name] = err
             logger.warning("[%s] ✗ %s", provider.name, err)
+            if log_callback:
+                log_callback(f"{provider.name} failed: {err}", "error")
 
             record_failure(provider.name, getattr(provider, "_last_api_url", "unknown"))
             record_failure("provider_fallback", provider.name)
@@ -267,14 +293,14 @@ def download_one(
                     max_attempts,
                     sleep_s,
                 )
+                if log_callback:
+                    log_callback(f"{provider.name} retrying in {sleep_s:.1f}s", "warning")
                 time.sleep(sleep_s)
                 attempt += 1
                 continue
 
-            _history_manager.add_download(
-                track_id=metadata.id,
-                track_name=metadata.title,
-                artist_name=metadata.artists,
+            _record_download_history(
+                metadata=metadata,
                 provider=provider.name,
                 success=False,
                 file_path="",
@@ -325,6 +351,7 @@ class DownloadWorker:
         total     = len(self._tracks)
         start     = time.perf_counter()
         base_out  = self._resolve_output_dir()
+        first_pass_failed: list[tuple[int, TrackMetadata, str]] = []
 
         for i, track in enumerate(self._tracks):
             position = i + 1
@@ -346,12 +373,47 @@ class DownloadWorker:
                 manager.complete_download(track.id, result.file_path or "", size_mb)
             else:
                 err = result.error or "unknown"
-                self._failed.append((track.title, track.artists, err))
                 logger.error("[worker] Failed: %s — %s: %s", track.title, track.artists, err)
                 manager.fail_download(track.id, err)
+                first_pass_failed.append((i, track, err))
 
             if i < total - 1:
                 time.sleep(self._opts.inter_track_delay_s)
+
+        if first_pass_failed:
+            logger.info("[worker] Final retry pass for %d failed track(s)", len(first_pass_failed))
+            print(f"\nFinal retry pass: {len(first_pass_failed)} track(s)")
+
+            recovered = 0
+            for i, track, first_err in first_pass_failed:
+                position = i + 1
+                out_dir = self._track_output_dir(base_out, track)
+                retry_result = download_one(
+                    track,
+                    out_dir,
+                    self._providers,
+                    self._opts,
+                    position,
+                )
+
+                if retry_result.success:
+                    recovered += 1
+                    size_mb = (
+                        os.path.getsize(retry_result.file_path) / (1024 * 1024)
+                        if retry_result.file_path and os.path.exists(retry_result.file_path)
+                        else 0.0
+                    )
+                    manager.complete_download(track.id, retry_result.file_path or "", size_mb)
+                    logger.info("[worker] Retry succeeded: %s — %s", track.title, track.artists)
+                    continue
+
+                final_err = retry_result.error or first_err
+                self._failed.append((track.title, track.artists, final_err))
+                manager.fail_download(track.id, final_err)
+                logger.error("[worker] Retry failed: %s — %s: %s", track.title, track.artists, final_err)
+
+            if recovered:
+                logger.info("[worker] Final retry recovered %d track(s)", recovered)
 
         elapsed = time.perf_counter() - start
         self._print_summary(elapsed)
