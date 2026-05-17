@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "YtFLAC"
-version = "0.0.0-dev"
+version = "0.1.0"
 description = "Get YouTube Music & Spotify tracks in true lossless FLAC from Tidal, Qobuz, Deezer & Amazon Music — no account required."
 readme = "README.md"
 requires-python = ">=3.9"

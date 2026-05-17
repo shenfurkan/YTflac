@@ -26,4 +26,4 @@ jobs:
 
       - name: Publish package to PyPI
         if: startsWith(github.ref, 'refs/heads/main')
-        run: twine upload dist/* -u __token__ -p "${{ secrets.PYPI_API_TOKEN }}"
+        run: twine upload --skip-existing dist/* -u __token__ -p "${{ secrets.PYPI_API_TOKEN }}"
