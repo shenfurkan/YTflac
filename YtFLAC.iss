@@ -28,7 +28,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 
 OutputDir=installer
 OutputBaseFilename=YtFLAC_Setup_v{#MyAppVersion}
-SetupIconFile=images\ytflaclogo.ico
+SetupIconFile=images\APPLOGO.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -46,9 +46,9 @@ Source: "images\*.ico"; DestDir: "{app}\images"; Flags: ignoreversion
 Source: "images\*.png"; DestDir: "{app}\images"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\images\ytflaclogo.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\images\APPLOGO.ico"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\images\ytflaclogo.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\images\APPLOGO.ico"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

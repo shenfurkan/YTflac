@@ -2,10 +2,10 @@
 YtFLAC build script.
 
 Usage:
-    python build.py              # build onefile EXE
-    python build.py --onedir     # build folder bundle (faster startup)
-    python build.py --installer  # also compile Inno Setup installer (needs ISCC.exe in PATH)
-    python build.py --clean      # remove build/, dist/, *.spec, installer/ and exit
+    python make_exe.py              # build onefile EXE
+    python make_exe.py --onedir     # build folder bundle (faster startup)
+    python make_exe.py --installer  # also compile Inno Setup installer (needs ISCC.exe in PATH)
+    python make_exe.py --clean      # remove build/, dist/, *.spec, installer/ and exit
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "YtFLAC"
 ENTRY = ROOT / "ytflac" / "__main__.py"
-ICON = ROOT / "images" / "ytflaclogo.ico"
+ICON = ROOT / "images" / "APPLOGO.ico"
 ISS_FILE = ROOT / f"{APP_NAME}.iss"
 DIST_DIR = ROOT / "dist"
 BUILD_DIR = ROOT / "build"
