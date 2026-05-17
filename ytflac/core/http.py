@@ -2,6 +2,7 @@
 HTTP client centralizzato con retry esponenziale e timeout.
 Ogni provider riceve un'istanza configurata — zero `requests.get` raw in giro.
 """
+
 from __future__ import annotations
 import logging
 import time
@@ -12,18 +13,23 @@ import requests
 from requests import Response, Session
 
 from .errors import (
-    AuthError, RateLimitedError, NetworkError,
-    ParseError, TrackNotFoundError, SpotiflacError,
+    AuthError,
+    RateLimitedError,
+    NetworkError,
+    ParseError,
+    TrackNotFoundError,
+    SpotiflacError,
 )
+import contextlib
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class RetryConfig:
-    max_attempts:   int   = 3
-    base_delay_s:   float = 1.0
-    max_delay_s:    float = 30.0
+    max_attempts: int = 3
+    base_delay_s: float = 1.0
+    max_delay_s: float = 30.0
     backoff_factor: float = 2.0
 
 
@@ -38,16 +44,16 @@ class HttpClient:
 
     def __init__(
         self,
-        provider:    str,
-        timeout_s:   int            = 30,
-        retry:       RetryConfig | None = None,
-        headers:     dict[str, str] | None = None,
-        session:     Session | None    = None,
+        provider: str,
+        timeout_s: int = 30,
+        retry: RetryConfig | None = None,
+        headers: dict[str, str] | None = None,
+        session: Session | None = None,
     ) -> None:
         self._provider = provider
-        self._timeout  = timeout_s
-        self._retry    = retry or RetryConfig()
-        self._session  = session or Session()
+        self._timeout = timeout_s
+        self._retry = retry or RetryConfig()
+        self._session = session or Session()
         if headers:
             self._session.headers.update(headers)
 
@@ -73,9 +79,9 @@ class HttpClient:
 
     def stream_to_file(
         self,
-        url:        str,
-        dest_path:  str,
-        progress_cb: Any = None,   # Callable[[int, int], None] | None
+        url: str,
+        dest_path: str,
+        progress_cb: Any = None,  # Callable[[int, int], None] | None
         chunk_size: int = 256 * 1024,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
@@ -84,6 +90,7 @@ class HttpClient:
         progress_cb(downloaded_bytes, total_bytes) viene chiamata ad ogni chunk.
         """
         import os
+
         temp = dest_path + ".part"
         req_kwargs: dict[str, Any] = {"stream": True, "timeout": (self._timeout, 120)}
         if extra_headers:
@@ -106,13 +113,13 @@ class HttpClient:
         except SpotiflacError:
             raise
         except Exception as exc:
-            raise NetworkError(self._provider, f"Stream download failed: {exc}", exc)
+            raise NetworkError(
+                self._provider, f"Stream download failed: {exc}"
+            ) from exc
         finally:
             if os.path.exists(temp):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(temp)
-                except OSError:
-                    pass
 
     # ------------------------------------------------------------------
     # Internal
@@ -132,34 +139,47 @@ class HttpClient:
             except RateLimitedError as exc:
                 last_err = exc
                 wait = getattr(exc, "retry_after", delay)
-                logger.warning("[%s] Rate limited — sleeping %ss (attempt %d/%d)",
-                               self._provider, wait, attempt, self._retry.max_attempts)
+                logger.warning(
+                    "[%s] Rate limited — sleeping %ss (attempt %d/%d)",
+                    self._provider,
+                    wait,
+                    attempt,
+                    self._retry.max_attempts,
+                )
                 time.sleep(wait)
 
             except SpotiflacError as exc:
                 if not exc.is_retryable() or attempt == self._retry.max_attempts:
                     raise
                 last_err = exc
-                logger.warning("[%s] Retryable error — attempt %d/%d: %s",
-                               self._provider, attempt, self._retry.max_attempts, exc)
+                logger.warning(
+                    "[%s] Retryable error — attempt %d/%d: %s",
+                    self._provider,
+                    attempt,
+                    self._retry.max_attempts,
+                    exc,
+                )
                 time.sleep(min(delay, self._retry.max_delay_s))
                 delay *= self._retry.backoff_factor
 
             except requests.Timeout as exc:
-                last_err = NetworkError(self._provider, f"Timeout after {self._timeout}s", exc)
+                last_err = NetworkError(
+                    self._provider, f"Timeout after {self._timeout}s", exc
+                )
                 if attempt == self._retry.max_attempts:
-                    raise last_err
+                    raise last_err from exc
                 time.sleep(min(delay, self._retry.max_delay_s))
                 delay *= self._retry.backoff_factor
 
             except requests.ConnectionError as exc:
                 last_err = NetworkError(self._provider, "Connection failed", exc)
                 if attempt == self._retry.max_attempts:
-                    raise last_err
+                    raise last_err from exc
                 time.sleep(min(delay, self._retry.max_delay_s))
                 delay *= self._retry.backoff_factor
 
-        raise last_err  # type: ignore[misc]
+        if last_err:
+            raise last_err
 
     def _raise_for_status(self, resp: Response) -> None:
         sc = resp.status_code
@@ -185,4 +205,4 @@ class HttpClient:
             return resp.json()
         except ValueError as exc:
             preview = body[:200] + ("..." if len(body) > 200 else "")
-            raise ParseError(self._provider, f"Invalid JSON: {preview}", exc)
+            raise ParseError(self._provider, f"Invalid JSON: {preview}") from exc

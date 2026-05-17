@@ -2,6 +2,7 @@
 BaseProvider: classe astratta per tutti i provider audio.
 Implementa il pattern Protocol/Interface di Go.
 """
+
 from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
@@ -21,19 +22,20 @@ class BaseProvider(ABC):
     I metodi concreti (stream_download, build_path) evitano
     la duplicazione presente nei file originali.
     """
+
     name: str = "base"
 
     def __init__(
         self,
-        timeout_s:  int            = 30,
-        retry:      RetryConfig | None = None,
-        headers:    dict[str, str] | None = None,
+        timeout_s: int = 30,
+        retry: RetryConfig | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self._http = HttpClient(
-            provider  = self.name,
-            timeout_s = timeout_s,
-            retry     = retry,
-            headers   = headers,
+            provider=self.name,
+            timeout_s=timeout_s,
+            retry=retry,
+            headers=headers,
         )
         self._progress_cb: Callable[[int, int], None] | None = None
         self._log_cb: Callable[[str, str], None] | None = None
@@ -51,15 +53,15 @@ class BaseProvider(ABC):
     @abstractmethod
     def download_track(
         self,
-        metadata:   TrackMetadata,
+        metadata: TrackMetadata,
         output_dir: str,
         *,
-        filename_format:     str  = "{title} - {artist}",
-        position:            int  = 1,
-        include_track_num:   bool = False,
+        filename_format: str = "{title} - {artist}",
+        position: int = 1,
+        include_track_num: bool = False,
         use_album_track_num: bool = False,
-        first_artist_only:   bool = False,
-        allow_fallback:      bool = True,
+        first_artist_only: bool = False,
+        allow_fallback: bool = True,
         embed_lyrics: bool = False,
         lyrics_providers: list[str] | None = None,
         lyrics_spotify_token: str = "",
@@ -75,23 +77,23 @@ class BaseProvider(ABC):
 
     def _build_output_path(
         self,
-        metadata:            TrackMetadata,
-        output_dir:          str,
-        filename_format:     str,
-        position:            int,
-        include_track_num:   bool,
+        metadata: TrackMetadata,
+        output_dir: str,
+        filename_format: str,
+        position: int,
+        include_track_num: bool,
         use_album_track_num: bool,
-        first_artist_only:   bool,
-        extension:           str = ".flac",
+        first_artist_only: bool,
+        extension: str = ".flac",
     ) -> Path:
         filename = build_filename(
             metadata,
-            fmt                  = filename_format,
-            position             = position,
-            include_track_number    = include_track_num,
-            use_album_track_number  = use_album_track_num,
-            first_artist_only    = first_artist_only,
-            extension            = extension,
+            fmt=filename_format,
+            position=position,
+            include_track_number=include_track_num,
+            use_album_track_number=use_album_track_num,
+            first_artist_only=first_artist_only,
+            extension=extension,
         )
         path = Path(output_dir) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +109,7 @@ class BaseProvider(ABC):
 
     def _safe_download(
         self,
-        metadata:   TrackMetadata,
+        metadata: TrackMetadata,
         output_dir: str,
         **kwargs,
     ) -> DownloadResult:
@@ -126,8 +128,3 @@ class BaseProvider(ABC):
             if log_cb:
                 log_cb(f"{self.name} error: {exc}", "error")
             return DownloadResult.fail(self.name, str(exc))
-        except Exception as exc:
-            logger.exception("[%s] Unexpected error", self.name)
-            if log_cb:
-                log_cb(f"{self.name} unexpected error: {exc}", "error")
-            return DownloadResult.fail(self.name, f"Unexpected: {exc}")

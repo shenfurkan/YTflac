@@ -34,21 +34,96 @@ AMAZON_API_BASE = "https://amazon.spotbye.qzz.io/api"
 # ---------------------------------------------------------------------------
 
 _AMAZON_DEBUG_KEY_SEED = b"spotif" + b"lac:am" + b"azon:spotbye:api:v1"
-_AMAZON_DEBUG_KEY_AAD  = bytes([
-    0x61,0x6d,0x61,0x7a,0x6f,0x6e,0x7c,0x73,0x70,0x6f,0x74,0x62,
-    0x79,0x65,0x7c,0x64,0x65,0x62,0x75,0x67,0x7c,0x76,0x31,
-])
-_AMAZON_DEBUG_KEY_NONCE = bytes([
-    0x52,0x1f,0xa4,0x9c,0x13,0x77,0x5b,0xe2,0x81,0x44,0x90,0x6d,
-])
-_AMAZON_DEBUG_KEY_CIPHERTEXT_TAG = bytes([
-    0x5b,0xf9,0xc1,0x2e,0x58,0xf8,0x5b,0xc0,0x04,0x68,0x7e,0xff,
-    0x3d,0xd6,0x8b,0xe3,0x86,0x49,0x6c,0xfd,0xc1,0x49,0x0b,0xfb,
-    0x6c,0x21,0x98,0x51,0xf2,0x38,0x4b,0x4a,0x23,0xe1,0xc6,0xd7,
-    0x65,0x7f,0xfb,0xa1,
-])
+_AMAZON_DEBUG_KEY_AAD = bytes(
+    [
+        0x61,
+        0x6D,
+        0x61,
+        0x7A,
+        0x6F,
+        0x6E,
+        0x7C,
+        0x73,
+        0x70,
+        0x6F,
+        0x74,
+        0x62,
+        0x79,
+        0x65,
+        0x7C,
+        0x64,
+        0x65,
+        0x62,
+        0x75,
+        0x67,
+        0x7C,
+        0x76,
+        0x31,
+    ]
+)
+_AMAZON_DEBUG_KEY_NONCE = bytes(
+    [
+        0x52,
+        0x1F,
+        0xA4,
+        0x9C,
+        0x13,
+        0x77,
+        0x5B,
+        0xE2,
+        0x81,
+        0x44,
+        0x90,
+        0x6D,
+    ]
+)
+_AMAZON_DEBUG_KEY_CIPHERTEXT_TAG = bytes(
+    [
+        0x5B,
+        0xF9,
+        0xC1,
+        0x2E,
+        0x58,
+        0xF8,
+        0x5B,
+        0xC0,
+        0x04,
+        0x68,
+        0x7E,
+        0xFF,
+        0x3D,
+        0xD6,
+        0x8B,
+        0xE3,
+        0x86,
+        0x49,
+        0x6C,
+        0xFD,
+        0xC1,
+        0x49,
+        0x0B,
+        0xFB,
+        0x6C,
+        0x21,
+        0x98,
+        0x51,
+        0xF2,
+        0x38,
+        0x4B,
+        0x4A,
+        0x23,
+        0xE1,
+        0xC6,
+        0xD7,
+        0x65,
+        0x7F,
+        0xFB,
+        0xA1,
+    ]
+)
 
 _amazon_debug_key: str | None = None
+
 
 def _get_amazon_debug_key() -> str:
     global _amazon_debug_key
@@ -68,10 +143,12 @@ def _get_amazon_debug_key() -> str:
 def _sanitize(value: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", value).strip()
 
+
 def _first_artist(artist_str: str) -> str:
     if not artist_str:
         return "Unknown"
     return artist_str.split(",")[0].strip()
+
 
 def _safe_int(value) -> int:
     try:
@@ -79,16 +156,42 @@ def _safe_int(value) -> int:
     except (ValueError, TypeError):
         return 0
 
+
+def _extract_amazon_asin(songlink_html: str) -> str | None:
+    patterns = [
+        r"https://music\.amazon\.[^\"'\s]+/(?:tracks|albums)/([A-Z0-9]{10})",
+        r"https://www\.amazon\.[^\"'\s]+/dp/([A-Z0-9]{10})",
+        r"https://www\.amazon\.[^\"'\s]+/gp/product/([A-Z0-9]{10})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, songlink_html)
+        if m:
+            return m.group(1)
+    return None
+
+
 def _ffmpeg_path() -> str:
     return "ffmpeg"
+
 
 def _ffprobe_path() -> str:
     return "ffprobe"
 
 
+def _subprocess_windows_silent() -> tuple[object | None, int]:
+    startupinfo = None
+    creationflags = 0
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return startupinfo, creationflags
+
+
 # ---------------------------------------------------------------------------
 # AmazonProvider
 # ---------------------------------------------------------------------------
+
 
 class AmazonProvider(BaseProvider):
     name = "amazon"
@@ -110,18 +213,19 @@ class AmazonProvider(BaseProvider):
         try:
             resp = self._session.get(
                 url,
-                headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
                 timeout=20,
             )
             resp.raise_for_status()
-            match = re.search(
-                r'https://music\.amazon\.com/(tracks|albums)/([A-Z0-9]{10})',
-                resp.text,
-            )
-            if not match:
-                raise RuntimeError("Amazon link not found in Songlink HTML")
-            asin = match.group(2)
-            base = base64.b64decode("aHR0cHM6Ly9tdXNpYy5hbWF6b24uY29tL3RyYWNrcy8=").decode()
+            asin = _extract_amazon_asin(resp.text)
+            if not asin:
+                raise RuntimeError("Amazon link not found in Songlink response")
+            base = base64.b64decode(
+                "aHR0cHM6Ly9tdXNpYy5hbWF6b24uY29tL3RyYWNrcy8="
+            ).decode()
             amazon_url = f"{base}{asin}?musicTerritory=US"
             logger.info("[amazon] Resolved URL: %s", amazon_url)
             return amazon_url
@@ -135,16 +239,24 @@ class AmazonProvider(BaseProvider):
     def _get_codec(self, filepath: str) -> str:
         try:
             cmd = [
-                _ffprobe_path(), "-v", "quiet", "-select_streams", "a:0",
-                "-show_entries", "stream=codec_name",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                _ffprobe_path(),
+                "-v",
+                "quiet",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
                 filepath,
             ]
-            si = None
-            if os.name == "nt":
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            return subprocess.check_output(cmd, text=True, startupinfo=si).strip()
+            si, flags = _subprocess_windows_silent()
+            return subprocess.check_output(
+                cmd,
+                text=True,
+                startupinfo=si,
+                creationflags=flags,
+            ).strip()
         except Exception:
             return "m4a"
 
@@ -168,8 +280,8 @@ class AmazonProvider(BaseProvider):
         if resp.status_code != 200:
             raise RuntimeError(f"Amazon API returned status {resp.status_code}")
 
-        data           = resp.json()
-        stream_url     = data.get("streamUrl")
+        data = resp.json()
+        stream_url = data.get("streamUrl")
         decryption_key = data.get("decryptionKey")
 
         if not stream_url:
@@ -180,7 +292,7 @@ class AmazonProvider(BaseProvider):
 
         with self._session.get(stream_url, stream=True, timeout=120) as r:
             r.raise_for_status()
-            total      = int(r.headers.get("Content-Length") or 0)
+            total = int(r.headers.get("Content-Length") or 0)
             downloaded = 0
             with open(temp_file, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
@@ -193,18 +305,26 @@ class AmazonProvider(BaseProvider):
         if decryption_key:
             logger.info("[amazon] Decrypting…")
             codec = self._get_codec(temp_file)
-            ext   = ".flac" if codec == "flac" else ".m4a"
-            out   = os.path.join(output_dir, f"{asin}{ext}")
+            ext = ".flac" if codec == "flac" else ".m4a"
+            out = os.path.join(output_dir, f"{asin}{ext}")
 
-            si = None
-            if os.name == "nt":
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si, flags = _subprocess_windows_silent()
 
             result = subprocess.run(
-                [_ffmpeg_path(), "-y", "-decryption_key", decryption_key.strip(),
-                 "-i", temp_file, "-c", "copy", out],
-                capture_output=True, startupinfo=si,
+                [
+                    _ffmpeg_path(),
+                    "-y",
+                    "-decryption_key",
+                    decryption_key.strip(),
+                    "-i",
+                    temp_file,
+                    "-c",
+                    "copy",
+                    out,
+                ],
+                capture_output=True,
+                startupinfo=si,
+                creationflags=flags,
             )
             os.remove(temp_file)
             if result.returncode != 0:
@@ -222,21 +342,21 @@ class AmazonProvider(BaseProvider):
     # ------------------------------------------------------------------
 
     def _embed_metadata(
-            self,
-            filepath:     str,
-            title:        str,
-            artist:       str,
-            album:        str,
-            album_artist: str,
-            date:         str,
-            track_num:    int,
-            total_tracks: int,
-            disc_num:     int,
-            total_discs:  int,
-            cover_url:    str,
-            copyright:    str = "",
-            publisher:    str = "",
-            url:          str = "",
+        self,
+        filepath: str,
+        title: str,
+        artist: str,
+        album: str,
+        album_artist: str,
+        date: str,
+        track_num: int,
+        total_tracks: int,
+        disc_num: int,
+        total_discs: int,
+        cover_url: str,
+        copyright: str = "",
+        publisher: str = "",
+        url: str = "",
     ) -> None:
         cover_data: bytes | None = None
         if cover_url:
@@ -247,29 +367,32 @@ class AmazonProvider(BaseProvider):
             except Exception as exc:
                 logger.warning("[amazon] Cover download failed: %s", exc)
 
-        t_num   = track_num   or 1
+        t_num = track_num or 1
         t_total = total_tracks or 1
-        d_num   = disc_num    or 1
+        d_num = disc_num or 1
         d_total = total_discs or 1
 
         try:
             if filepath.endswith(".flac"):
                 audio = FLAC(filepath)
                 audio.delete()
-                audio["TITLE"]       = title
-                audio["ARTIST"]      = artist
-                audio["ALBUM"]       = album
+                audio["TITLE"] = title
+                audio["ARTIST"] = artist
+                audio["ALBUM"] = album
                 audio["ALBUMARTIST"] = album_artist
-                audio["DATE"]        = date
+                audio["DATE"] = date
                 audio["TRACKNUMBER"] = str(t_num)
-                audio["TRACKTOTAL"]  = str(t_total)
-                audio["DISCNUMBER"]  = str(d_num)
-                audio["DISCTOTAL"]   = str(d_total)
-                if copyright: audio["COPYRIGHT"]    = copyright
-                if publisher: audio["ORGANIZATION"] = publisher
-                if url:       audio["URL"]          = url
+                audio["TRACKTOTAL"] = str(t_total)
+                audio["DISCNUMBER"] = str(d_num)
+                audio["DISCTOTAL"] = str(d_total)
+                if copyright:
+                    audio["COPYRIGHT"] = copyright
+                if publisher:
+                    audio["ORGANIZATION"] = publisher
+                if url:
+                    audio["URL"] = url
                 if cover_data:
-                    pic      = Picture()
+                    pic = Picture()
                     pic.data = cover_data
                     pic.type = PictureType.COVER_FRONT
                     pic.mime = "image/jpeg"
@@ -282,13 +405,16 @@ class AmazonProvider(BaseProvider):
                 audio["\xa9nam"] = title
                 audio["\xa9ART"] = artist
                 audio["\xa9alb"] = album
-                audio["aART"]    = album_artist
+                audio["aART"] = album_artist
                 audio["\xa9day"] = date
-                audio["trkn"]    = [(t_num, t_total)]
-                audio["disk"]    = [(d_num, d_total)]
-                if copyright: audio["cprt"] = copyright
+                audio["trkn"] = [(t_num, t_total)]
+                audio["disk"] = [(d_num, d_total)]
+                if copyright:
+                    audio["cprt"] = copyright
                 if cover_data:
-                    audio["covr"] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
+                    audio["covr"] = [
+                        MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)
+                    ]
                 audio.save()
 
             logger.info("[amazon] Metadata embedded: %s", os.path.basename(filepath))
@@ -300,29 +426,34 @@ class AmazonProvider(BaseProvider):
     # ------------------------------------------------------------------
 
     def download_track(
-            self,
-            metadata:            TrackMetadata,
-            output_dir:          str,
-            *,
-            filename_format:     str             = "{title} - {artist}",
-            position:            int             = 1,
-            include_track_num:   bool            = False,
-            use_album_track_num: bool            = False,
-            first_artist_only:   bool            = False,
-            allow_fallback:      bool            = True,
-            quality:             str             = "LOSSLESS",
-            # ── parametri lyrics e enrich (stessa firma di Tidal/Qobuz) ──
-            embed_lyrics:            bool            = False,
-            lyrics_providers:        list[str] | None = None,
-            lyrics_spotify_token:    str             = "",
-            enrich_metadata:         bool            = False,
-            enrich_providers:        list[str] | None = None,
-            **kwargs,
+        self,
+        metadata: TrackMetadata,
+        output_dir: str,
+        *,
+        filename_format: str = "{title} - {artist}",
+        position: int = 1,
+        include_track_num: bool = False,
+        use_album_track_num: bool = False,
+        first_artist_only: bool = False,
+        allow_fallback: bool = True,
+        quality: str = "LOSSLESS",
+        # ── parametri lyrics e enrich (stessa firma di Tidal/Qobuz) ──
+        embed_lyrics: bool = False,
+        lyrics_providers: list[str] | None = None,
+        lyrics_spotify_token: str = "",
+        enrich_metadata: bool = False,
+        enrich_providers: list[str] | None = None,
+        **kwargs,
     ) -> DownloadResult:
         try:
             dest = self._build_output_path(
-                metadata, output_dir, filename_format,
-                position, include_track_num, use_album_track_num, first_artist_only,
+                metadata,
+                output_dir,
+                filename_format,
+                position,
+                include_track_num,
+                use_album_track_num,
+                first_artist_only,
             )
             if self._file_exists(dest):
                 if self._log_cb:
@@ -331,6 +462,7 @@ class AmazonProvider(BaseProvider):
 
             # Avvia MusicBrainz in parallelo mentre il file viene scaricato
             from ..core.musicbrainz import AsyncMBFetch
+
             mb_fetcher = AsyncMBFetch(metadata.isrc) if metadata.isrc else None
 
             if self._log_cb:
@@ -340,7 +472,7 @@ class AmazonProvider(BaseProvider):
                 self._log_cb("Amazon: downloading…", "download")
             downloaded = self._download_from_api(amazon_url, output_dir, quality)
 
-            ext      = os.path.splitext(downloaded)[1] or ".m4a"
+            ext = os.path.splitext(downloaded)[1] or ".m4a"
             dest_ext = str(dest).rsplit(".", 1)[0] + ext
 
             if os.path.abspath(downloaded) != os.path.abspath(dest_ext):
@@ -354,24 +486,24 @@ class AmazonProvider(BaseProvider):
                 res = mb_fetcher.result()
                 if res:
                     mapping = {
-                        "mbid_track":       "MUSICBRAINZ_TRACKID",
-                        "mbid_album":       "MUSICBRAINZ_ALBUMID",
-                        "mbid_artist":      "MUSICBRAINZ_ARTISTID",
-                        "mbid_relgroup":    "MUSICBRAINZ_RELEASEGROUPID",
+                        "mbid_track": "MUSICBRAINZ_TRACKID",
+                        "mbid_album": "MUSICBRAINZ_ALBUMID",
+                        "mbid_artist": "MUSICBRAINZ_ARTISTID",
+                        "mbid_relgroup": "MUSICBRAINZ_RELEASEGROUPID",
                         "mbid_albumartist": "MUSICBRAINZ_ALBUMARTISTID",
-                        "barcode":          "BARCODE",
-                        "label":            "LABEL",
-                        "organization":     "ORGANIZATION",
-                        "country":          "RELEASECOUNTRY",
-                        "script":           "SCRIPT",
-                        "status":           "RELEASESTATUS",
-                        "media":            "MEDIA",
-                        "type":             "RELEASETYPE",
-                        "artist_sort":      "ARTISTSORT",
+                        "barcode": "BARCODE",
+                        "label": "LABEL",
+                        "organization": "ORGANIZATION",
+                        "country": "RELEASECOUNTRY",
+                        "script": "SCRIPT",
+                        "status": "RELEASESTATUS",
+                        "media": "MEDIA",
+                        "type": "RELEASETYPE",
+                        "artist_sort": "ARTISTSORT",
                         "albumartist_sort": "ALBUMARTISTSORT",
-                        "catalognumber":    "CATALOGNUMBER",
-                        "bpm":              "BPM",
-                        "genre":            "GENRE"
+                        "catalognumber": "CATALOGNUMBER",
+                        "bpm": "BPM",
+                        "genre": "GENRE",
                     }
                     for mb_key, tag_name in mapping.items():
                         val = res.get(mb_key)
@@ -384,6 +516,7 @@ class AmazonProvider(BaseProvider):
                         mb_tags["CATALOGNUMBER"] = res["catalognumber"]
 
                 from ..core.tagger import _print_mb_summary
+
                 _print_mb_summary(mb_tags)
 
             # ── Embedding ────────────────────────────────────────────────
@@ -391,17 +524,19 @@ class AmazonProvider(BaseProvider):
             # M4A  → embedding base (mutagen MP4 non supporta enrich/lyrics FLAC)
             if dest_ext.endswith(".flac"):
                 from ..core.tagger import embed_metadata as _embed
+
                 _embed(
-                    dest_ext, metadata,
-                    first_artist_only       = first_artist_only,
-                    cover_url               = metadata.cover_url,
-                    session                 = self._session,
-                    extra_tags              = mb_tags,
-                    embed_lyrics            = embed_lyrics,
-                    lyrics_providers        = lyrics_providers,
-                    lyrics_spotify_token    = lyrics_spotify_token,
-                    enrich                  = enrich_metadata,
-                    enrich_providers        = enrich_providers,
+                    dest_ext,
+                    metadata,
+                    first_artist_only=first_artist_only,
+                    cover_url=metadata.cover_url,
+                    session=self._session,
+                    extra_tags=mb_tags,
+                    embed_lyrics=embed_lyrics,
+                    lyrics_providers=lyrics_providers,
+                    lyrics_spotify_token=lyrics_spotify_token,
+                    enrich=enrich_metadata,
+                    enrich_providers=enrich_providers,
                 )
                 if self._log_cb:
                     self._log_cb("Amazon: tags written", "success")
@@ -409,24 +544,32 @@ class AmazonProvider(BaseProvider):
                 if self._log_cb:
                     self._log_cb("Amazon: downloaded M4A (FLAC unavailable)", "warning")
                 # Fallback .m4a: tag base senza enrich/lyrics
-                track_num    = position
+                track_num = position
                 if use_album_track_num and _safe_int(metadata.track_number) > 0:
                     track_num = _safe_int(metadata.track_number)
-                artist       = _first_artist(metadata.artists) if first_artist_only else metadata.artists
-                album_artist = _first_artist(metadata.album_artist) if first_artist_only else metadata.album_artist
+                artist = (
+                    _first_artist(metadata.artists)
+                    if first_artist_only
+                    else metadata.artists
+                )
+                album_artist = (
+                    _first_artist(metadata.album_artist)
+                    if first_artist_only
+                    else metadata.album_artist
+                )
 
                 self._embed_metadata(
-                    filepath     = dest_ext,
-                    title        = metadata.title,
-                    artist       = artist,
-                    album        = metadata.album,
-                    album_artist = album_artist,
-                    date         = metadata.release_date,
-                    track_num    = track_num,
-                    total_tracks = _safe_int(metadata.total_tracks),
-                    disc_num     = _safe_int(metadata.disc_number),
-                    total_discs  = _safe_int(metadata.total_discs),
-                    cover_url    = metadata.cover_url,
+                    filepath=dest_ext,
+                    title=metadata.title,
+                    artist=artist,
+                    album=metadata.album,
+                    album_artist=album_artist,
+                    date=metadata.release_date,
+                    track_num=track_num,
+                    total_tracks=_safe_int(metadata.total_tracks),
+                    disc_num=_safe_int(metadata.disc_number),
+                    total_discs=_safe_int(metadata.total_discs),
+                    cover_url=metadata.cover_url,
                 )
                 if enrich_metadata or embed_lyrics:
                     logger.warning(

@@ -5,6 +5,7 @@ from ..core.http import HttpClient
 
 logger = logging.getLogger(__name__)
 
+
 class SongstatsProvider:
     """Estrae ISRC dalla pagina pubblica di Songstats."""
 

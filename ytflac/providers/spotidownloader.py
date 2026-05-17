@@ -1,5 +1,5 @@
 ###########################################################################
-#Spotidownloader return
+# Spotidownloader return
 ####################
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ from .base import BaseProvider
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.spotidownloader.com"
-_ORIGIN   = "https://spotidownloader.com"
+_ORIGIN = "https://spotidownloader.com"
 _SESSION_URL = f"{_API_BASE}/session"
+
 
 class SpotiDownloaderProvider(BaseProvider):
     name = "spotidownloader"
@@ -33,7 +34,7 @@ class SpotiDownloaderProvider(BaseProvider):
     # ---------------------------------------------------------
     # BOOTSTRAP TOKEN SCRAPER (fallback real do site)
     # ---------------------------------------------------------
-    
+
     def _fetch_bootstrap_token(self) -> str:
         try:
             resp = self._http.post_json(
@@ -50,7 +51,7 @@ class SpotiDownloaderProvider(BaseProvider):
                 },
             )
         except Exception as exc:
-            raise AuthError(self.name, f"session request failed: {exc}")
+            raise AuthError(self.name, f"session request failed: {exc}") from exc
 
         if not resp or not resp.get("success"):
             raise AuthError(self.name, "bootstrap session failed")
@@ -147,7 +148,7 @@ class SpotiDownloaderProvider(BaseProvider):
         lyrics_spotify_token: str = "",
         enrich_metadata: bool = False,
         enrich_providers=None,
-        **kwargs,   # <- FIX: evita crash de "unexpected keyword"
+        **kwargs,  # <- FIX: evita crash de "unexpected keyword"
     ) -> DownloadResult:
 
         try:

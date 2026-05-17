@@ -2,6 +2,7 @@
 MusicBrainz API Client (Ported from Go implementation)
 Gestisce rate-limiting globale, caching, deduplicazione in-flight e retry.
 """
+
 from __future__ import annotations
 import logging
 import threading
@@ -14,12 +15,12 @@ import threading as _threading
 
 logger = logging.getLogger(__name__)
 
-_MB_API_BASE             = "https://musicbrainz.org/ws/2"
-_MB_TIMEOUT              = 6
-_MB_RETRIES              = 2
-_MB_RETRY_WAIT           = 1.5
-_MB_MIN_REQ_INTERVAL     = 1.1
-_MB_THROTTLE_COOLDOWN    = 5.0
+_MB_API_BASE = "https://musicbrainz.org/ws/2"
+_MB_TIMEOUT = 6
+_MB_RETRIES = 2
+_MB_RETRY_WAIT = 1.5
+_MB_MIN_REQ_INTERVAL = 1.1
+_MB_THROTTLE_COOLDOWN = 5.0
 
 _USER_AGENT = "SpotiFLAC/2.0 ( support@spotbye.qzz.io )"
 
@@ -32,9 +33,9 @@ _mb_throttle_mu = threading.Lock()
 _mb_next_request: float = 0.0
 _mb_blocked_till: float = 0.0
 
-_mb_status_lock        = _threading.Lock()
-_mb_last_checked_at:   float = 0.0
-_mb_last_online:       bool  = True
+_mb_status_lock = _threading.Lock()
+_mb_last_checked_at: float = 0.0
+_mb_last_online: bool = True
 _MB_STATUS_SKIP_WINDOW = 300.0
 
 
@@ -42,7 +43,7 @@ def set_mb_status(online: bool) -> None:
     global _mb_last_checked_at, _mb_last_online
     with _mb_status_lock:
         _mb_last_checked_at = time.time()
-        _mb_last_online     = online
+        _mb_last_online = online
 
 
 def should_skip_mb() -> bool:
@@ -72,6 +73,7 @@ def _wait_for_request_slot() -> None:
     if wait_duration > 0:
         time.sleep(wait_duration)
 
+
 def _note_throttle() -> None:
     global _mb_blocked_till, _mb_next_request
     with _mb_throttle_mu:
@@ -81,12 +83,10 @@ def _note_throttle() -> None:
         if _mb_next_request < _mb_blocked_till:
             _mb_next_request = _mb_blocked_till
 
+
 def _query_recordings(query: str) -> dict:
     url = f"{_MB_API_BASE}/recording?query={urllib.parse.quote(query)}&fmt=json&inc=releases+artist-credits+tags+media+release-groups+labels+label-info+isrcs"
-    headers = {
-        "User-Agent": _USER_AGENT,
-        "Accept": "application/json"
-    }
+    headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
 
     last_err = Exception("Empty response")
 
@@ -115,6 +115,7 @@ def _query_recordings(query: str) -> dict:
 
     raise last_err
 
+
 def fetch_mb_metadata(isrc: str) -> dict:
     if not isrc:
         return {}
@@ -142,12 +143,25 @@ def fetch_mb_metadata(isrc: str) -> dict:
         return _mb_cache.get(cache_key, {})
 
     res = {
-        "genre": "", "original_date": "", "bpm": "", "mbid_track": "",
-        "mbid_album": "", "mbid_artist": "", "mbid_relgroup": "",
-        "mbid_albumartist": "", "albumartist_sort": "", "catalognumber": "",
-        "label": "", "barcode": "", "organization": "",
-        "country": "", "script": "", "status": "",
-        "media": "", "type": "", "artist_sort": ""
+        "genre": "",
+        "original_date": "",
+        "bpm": "",
+        "mbid_track": "",
+        "mbid_album": "",
+        "mbid_artist": "",
+        "mbid_relgroup": "",
+        "mbid_albumartist": "",
+        "albumartist_sort": "",
+        "catalognumber": "",
+        "label": "",
+        "barcode": "",
+        "organization": "",
+        "country": "",
+        "script": "",
+        "status": "",
+        "media": "",
+        "type": "",
+        "artist_sort": "",
     }
 
     try:
@@ -169,8 +183,10 @@ def fetch_mb_metadata(isrc: str) -> dict:
                     a_id = artist_obj.get("id")
                     a_sort = artist_obj.get("sort-name", "")
                     phrase = c.get("joinphrase", "")
-                    if a_id: artist_ids.append(a_id)
-                    if a_sort: sort_names.append(a_sort + phrase)
+                    if a_id:
+                        artist_ids.append(a_id)
+                    if a_sort:
+                        sort_names.append(a_sort + phrase)
                 res["mbid_artist"] = "; ".join(artist_ids)
                 res["artist_sort"] = "".join(sort_names)
 
@@ -178,30 +194,38 @@ def fetch_mb_metadata(isrc: str) -> dict:
             for c in credits:
                 all_tags.extend(c.get("artist", {}).get("tags", []))
             if all_tags:
-                sorted_tags = sorted(all_tags, key=lambda x: x.get("count", 0), reverse=True)
+                sorted_tags = sorted(
+                    all_tags, key=lambda x: x.get("count", 0), reverse=True
+                )
                 genres = []
                 for t in sorted_tags:
                     name = t.get("name", "").title()
-                    if name and name not in genres: genres.append(name)
+                    if name and name not in genres:
+                        genres.append(name)
                 res["genre"] = "; ".join(genres[:5])
 
             releases = rec.get("releases", [])
             if releases:
+
                 def _release_score(r: dict) -> int:
                     score = 0
-                    if r.get("barcode"): score += 2
-                    if r.get("label-info"): score += 2
-                    if r.get("country"): score += 1
-                    if r.get("status") == "Official": score += 1
+                    if r.get("barcode"):
+                        score += 2
+                    if r.get("label-info"):
+                        score += 2
+                    if r.get("country"):
+                        score += 1
+                    if r.get("status") == "Official":
+                        score += 1
                     return score
 
                 rel = max(releases, key=_release_score)
-                res["mbid_album"]    = rel.get("id", "")
+                res["mbid_album"] = rel.get("id", "")
                 res["mbid_relgroup"] = rel.get("release-group", {}).get("id", "")
-                res["status"]        = rel.get("status", "")
-                res["type"]          = rel.get("release-group", {}).get("primary-type", "")
-                res["country"]       = rel.get("country", "")
-                res["script"]        = rel.get("text-representation", {}).get("script", "")
+                res["status"] = rel.get("status", "")
+                res["type"] = rel.get("release-group", {}).get("primary-type", "")
+                res["country"] = rel.get("country", "")
+                res["script"] = rel.get("text-representation", {}).get("script", "")
                 media = rel.get("media", [])
                 if media:
                     res["media"] = media[0].get("format", "")
@@ -212,11 +236,13 @@ def fetch_mb_metadata(isrc: str) -> dict:
                     aa_sort_names = []
                     for c in rel_credits:
                         artist_obj = c.get("artist", {})
-                        a_id   = artist_obj.get("id")
+                        a_id = artist_obj.get("id")
                         a_sort = artist_obj.get("sort-name", "")
                         phrase = c.get("joinphrase", "")
-                        if a_id:   aa_ids.append(a_id)
-                        if a_sort: aa_sort_names.append(a_sort + phrase)
+                        if a_id:
+                            aa_ids.append(a_id)
+                        if a_sort:
+                            aa_sort_names.append(a_sort + phrase)
                     res["mbid_albumartist"] = "; ".join(aa_ids)
                     res["albumartist_sort"] = "".join(aa_sort_names)
 
@@ -226,11 +252,15 @@ def fetch_mb_metadata(isrc: str) -> dict:
                     for li in r.get("label-info", []):
                         lbl = li.get("label") or {}
                         if not res.get("label") and lbl.get("name"):
-                            res["label"]        = lbl["name"]
+                            res["label"] = lbl["name"]
                             res["organization"] = lbl["name"]
                         if not res.get("catalognumber") and li.get("catalog-number"):
                             res["catalognumber"] = li["catalog-number"]
-                    if res.get("barcode") and res.get("label") and res.get("catalognumber"):
+                    if (
+                        res.get("barcode")
+                        and res.get("label")
+                        and res.get("catalognumber")
+                    ):
                         break
 
         _mb_cache[cache_key] = res
@@ -252,6 +282,7 @@ class AsyncMBFetch:
     Avvia la ricerca di MusicBrainz in background.
     Restituisce un dizionario completo con tutti i metadati professionali.
     """
+
     _executor = ThreadPoolExecutor(max_workers=4)
 
     def __init__(self, isrc: str):

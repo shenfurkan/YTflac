@@ -1,6 +1,7 @@
 """
 Downloader — orchestratore principale.
 """
+
 from __future__ import annotations
 import logging
 import os
@@ -14,6 +15,7 @@ from .core.models import TrackMetadata, DownloadResult
 from .core.progress import DownloadManager, ProgressCallback
 from .core.errors import ErrorKind, SpotiflacError, classify_error
 from .core.console import print_track_header, print_summary
+from .core.paths import app_log_path
 from .core.provider_stats import (
     is_provider_open,
     prioritize,
@@ -62,14 +64,16 @@ def _record_download_history(
 # Failure log — written to a separate, user-shareable file
 # ---------------------------------------------------------------------------
 
+
 def _failure_log_path() -> str:
-    return os.path.join(os.getcwd(), "ytflac_failures.log")
+    return str(app_log_path("ytflac_failures.log"))
 
 
-def _log_failure(metadata: "TrackMetadata", per_provider_errors: dict[str, str]) -> None:
+def _log_failure(metadata: TrackMetadata, per_provider_errors: dict[str, str]) -> None:
     """Append a detailed failure block to ytflac_failures.log."""
     try:
         from datetime import datetime
+
         path = _failure_log_path()
         with open(path, "a", encoding="utf-8") as f:
             f.write("=" * 80 + "\n")
@@ -107,6 +111,25 @@ def _retry_sleep_seconds(attempt: int) -> float:
     return 0.0
 
 
+def _compact_provider_error(provider_name: str, err: str) -> str:
+    text = (err or "unknown").strip()
+    if not text:
+        return "unknown"
+
+    if provider_name == "tidal" and "Tidal APIs failed" in text and " — " in text:
+        head, details = text.split(" — ", 1)
+        parts = [p.strip() for p in details.split(";") if p.strip()]
+        if len(parts) > 5:
+            details = "; ".join(parts[:5]) + f"; ... (+{len(parts) - 5} more)"
+        else:
+            details = "; ".join(parts)
+        text = f"{head} — {details}"
+
+    if len(text) > 260:
+        return text[:257] + "..."
+    return text
+
+
 def _order_providers_for_track(providers: list[BaseProvider]) -> list[BaseProvider]:
     """
     Order providers by observed fallback success while honoring circuit breaker.
@@ -138,29 +161,29 @@ def _order_providers_for_track(providers: list[BaseProvider]) -> list[BaseProvid
 
 @dataclass
 class DownloadOptions:
-    output_dir:              str
-    services:                list[str]       = field(default_factory=lambda: ["tidal"])
-    filename_format:         str             = "{title} - {artist}"
-    use_track_numbers:       bool            = False
-    use_album_track_numbers: bool         = False
-    use_artist_subfolders:   bool           = False
-    use_album_subfolders:    bool           = False
-    first_artist_only:       bool            = False
-    quality:                 str             = "LOSSLESS"
-    allow_fallback:          bool            = True
-    inter_track_delay_s:     float           = 0.5
+    output_dir: str
+    services: list[str] = field(default_factory=lambda: ["tidal"])
+    filename_format: str = "{title} - {artist}"
+    use_track_numbers: bool = False
+    use_album_track_numbers: bool = False
+    use_artist_subfolders: bool = False
+    use_album_subfolders: bool = False
+    first_artist_only: bool = False
+    quality: str = "LOSSLESS"
+    allow_fallback: bool = True
+    inter_track_delay_s: float = 0.5
 
-    embed_lyrics:            bool          = False
-    lyrics_providers:        list[str]     = field(
+    embed_lyrics: bool = False
+    lyrics_providers: list[str] = field(
         default_factory=lambda: ["spotify", "musixmatch", "amazon", "lrclib"]
     )
-    lyrics_spotify_token:    str           = ""
+    lyrics_spotify_token: str = ""
 
-    enrich_metadata:    bool           = False
-    enrich_providers:   list[str]      = field(
+    enrich_metadata: bool = False
+    enrich_providers: list[str] = field(
         default_factory=lambda: ["deezer", "apple", "qobuz", "tidal"]
     )
-    qobuz_token:        str | None     = None
+    qobuz_token: str | None = None
 
 
 def _build_provider(name: str, opts: DownloadOptions) -> BaseProvider | None:
@@ -168,15 +191,15 @@ def _build_provider(name: str, opts: DownloadOptions) -> BaseProvider | None:
     from .providers.qobuz import QobuzProvider
 
     if name == "tidal":
-        return TidalProvider()
+        return TidalProvider(qobuz_token=opts.qobuz_token)
     if name == "qobuz":
         return QobuzProvider(qobuz_token=opts.qobuz_token)
 
     adapters = {
-        "amazon":  ("providers.amazon",  "AmazonProvider"),
-        "deezer":  ("providers.deezer",  "DeezerProvider"),
+        "amazon": ("providers.amazon", "AmazonProvider"),
+        "deezer": ("providers.deezer", "DeezerProvider"),
         "youtube": ("providers.youtube", "YouTubeProvider"),
-        "spoti":  ("providers.spotidownloader", "SpotiDownloaderProvider"),
+        "spoti": ("providers.spotidownloader", "SpotiDownloaderProvider"),
     }
     if name not in adapters:
         logger.warning("Unknown provider: %s", name)
@@ -185,6 +208,7 @@ def _build_provider(name: str, opts: DownloadOptions) -> BaseProvider | None:
     module_path, class_name = adapters[name]
     try:
         import importlib
+
         pkg = __name__.rsplit(".", 1)[0]
         mod = importlib.import_module(f".{module_path}", package=pkg)
         return getattr(mod, class_name)()
@@ -194,19 +218,22 @@ def _build_provider(name: str, opts: DownloadOptions) -> BaseProvider | None:
 
 
 def download_one(
-        metadata:     TrackMetadata,
-        output_dir:   str,
-        providers:    list[BaseProvider],
-        opts:         DownloadOptions,
-        position:     int = 1,
-        log_callback: Callable[[str, str], None] | None = None,
+    metadata: TrackMetadata,
+    output_dir: str,
+    providers: list[BaseProvider],
+    opts: DownloadOptions,
+    position: int = 1,
+    log_callback: Callable[[str, str], None] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> DownloadResult:
     errors: dict[str, str] = {}
     manager = DownloadManager()
-    
+
     # Add to progress queue
-    manager.add_to_queue(metadata.id, metadata.title, metadata.artists, metadata.album, metadata.id)
-    
+    manager.add_to_queue(
+        metadata.id, metadata.title, metadata.artists, metadata.album, metadata.id
+    )
+
     # Check ISRC cache
     cached_isrc = get_cached_isrc(metadata.id)
     if cached_isrc:
@@ -219,17 +246,27 @@ def download_one(
             cooldown = provider_cooldown_remaining(provider.name)
             msg = f"circuit open ({cooldown}s cooldown remaining)"
             errors[provider.name] = msg
-            logger.info("[%s] Skipped for %s — %s: %s", provider.name, metadata.artists, metadata.title, msg)
+            logger.info(
+                "[%s] Skipped for %s — %s: %s",
+                provider.name,
+                metadata.artists,
+                metadata.title,
+                msg,
+            )
             if log_callback:
-                log_callback(f"{provider.name} skipped (cooldown {cooldown}s)", "warning")
+                log_callback(
+                    f"{provider.name} skipped (cooldown {cooldown}s)", "warning"
+                )
             continue
 
-        logger.info("[%s] Trying: %s — %s", provider.name, metadata.artists, metadata.title)
+        logger.info(
+            "[%s] Trying: %s — %s", provider.name, metadata.artists, metadata.title
+        )
         if log_callback:
             log_callback(f"Trying {provider.name}…", "api")
             provider.set_log_callback(log_callback)
 
-        cb = ProgressCallback(item_id=metadata.id, log_callback=log_callback)
+        cb = ProgressCallback(item_id=metadata.id, log_callback=log_callback, progress_callback=progress_callback)
         provider.set_progress_callback(cb)
 
         attempt = 1
@@ -238,25 +275,31 @@ def download_one(
             result = provider.download_track(
                 metadata,
                 output_dir,
-                filename_format     = opts.filename_format,
-                position            = position,
-                include_track_num   = opts.use_track_numbers,
-                use_album_track_num = opts.use_album_track_numbers,
-                first_artist_only   = opts.first_artist_only,
-                allow_fallback      = opts.allow_fallback,
-                quality             = opts.quality,
-                embed_lyrics            = opts.embed_lyrics,
-                lyrics_providers        = opts.lyrics_providers,
-                lyrics_spotify_token    = opts.lyrics_spotify_token,
-                enrich_metadata         = opts.enrich_metadata,
-                enrich_providers        = opts.enrich_providers,
+                filename_format=opts.filename_format,
+                position=position,
+                include_track_num=opts.use_track_numbers,
+                use_album_track_num=opts.use_album_track_numbers,
+                first_artist_only=opts.first_artist_only,
+                allow_fallback=opts.allow_fallback,
+                quality=opts.quality,
+                embed_lyrics=opts.embed_lyrics,
+                lyrics_providers=opts.lyrics_providers,
+                lyrics_spotify_token=opts.lyrics_spotify_token,
+                enrich_metadata=opts.enrich_metadata,
+                enrich_providers=opts.enrich_providers,
             )
 
             if result.success:
-                logger.info("[%s] ✓ %s — %s", provider.name, metadata.artists, metadata.title)
+                logger.info(
+                    "[%s] ✓ %s — %s", provider.name, metadata.artists, metadata.title
+                )
                 if log_callback:
-                    log_callback(f"{provider.name} found track — downloading", "success")
-                record_success(provider.name, getattr(provider, "_last_api_url", "unknown"))
+                    log_callback(
+                        f"{provider.name} found track — downloading", "success"
+                    )
+                record_success(
+                    provider.name, getattr(provider, "_last_api_url", "unknown")
+                )
                 record_success("provider_fallback", provider.name)
                 record_provider_success(provider.name)
 
@@ -294,7 +337,9 @@ def download_one(
                     sleep_s,
                 )
                 if log_callback:
-                    log_callback(f"{provider.name} retrying in {sleep_s:.1f}s", "warning")
+                    log_callback(
+                        f"{provider.name} retrying in {sleep_s:.1f}s", "warning"
+                    )
                 time.sleep(sleep_s)
                 attempt += 1
                 continue
@@ -309,8 +354,9 @@ def download_one(
 
     summary_parts = []
     for prov, err in errors.items():
-        kind = classify_error(err)
-        summary_parts.append(f"{prov} [{kind.name}]: {err}")
+        clean_err = _compact_provider_error(prov, err)
+        kind = classify_error(clean_err)
+        summary_parts.append(f"{prov} [{kind.name}]: {clean_err}")
     summary = " || ".join(summary_parts)
 
     # Persistent, user-shareable failure log
@@ -321,19 +367,21 @@ def download_one(
 
 class DownloadWorker:
     def __init__(
-            self,
-            tracks:   list[TrackMetadata],
-            opts:     DownloadOptions,
-            collection_name: str = "",
-            is_album:     bool = False,
-            is_playlist:  bool = False,
+        self,
+        tracks: list[TrackMetadata],
+        opts: DownloadOptions,
+        collection_name: str = "",
+        is_album: bool = False,
+        is_playlist: bool = False,
+        cli_output: bool = True,
     ) -> None:
-        self._tracks          = tracks
-        self._opts            = opts
+        self._tracks = tracks
+        self._opts = opts
         self._collection_name = collection_name
-        self._is_album        = is_album
-        self._is_playlist     = is_playlist
-        self._failed:  list[tuple[str, str, str]] = []
+        self._is_album = is_album
+        self._is_playlist = is_playlist
+        self._cli_output = cli_output
+        self._failed: list[tuple[str, str, str]] = []
         self._providers: list[BaseProvider] = self._build_providers()
 
     def _build_providers(self) -> list[BaseProvider]:
@@ -347,22 +395,21 @@ class DownloadWorker:
         return result
 
     def run(self) -> list[tuple[str, str, str]]:
-        manager   = DownloadManager()
-        total     = len(self._tracks)
-        start     = time.perf_counter()
-        base_out  = self._resolve_output_dir()
+        manager = DownloadManager()
+        total = len(self._tracks)
+        start = time.perf_counter()
+        base_out = self._resolve_output_dir()
         first_pass_failed: list[tuple[int, TrackMetadata, str]] = []
 
         for i, track in enumerate(self._tracks):
             position = i + 1
-            print_track_header(position, total, track.title, track.artists, track.album)
+            if self._cli_output:
+                print_track_header(position, total, track.title, track.artists, track.album)
 
             manager.start_download(track.id)
 
             out_dir = self._track_output_dir(base_out, track)
-            result  = download_one(
-                track, out_dir, self._providers, self._opts, position
-            )
+            result = download_one(track, out_dir, self._providers, self._opts, position)
 
             if result.success:
                 size_mb = (
@@ -373,7 +420,9 @@ class DownloadWorker:
                 manager.complete_download(track.id, result.file_path or "", size_mb)
             else:
                 err = result.error or "unknown"
-                logger.error("[worker] Failed: %s — %s: %s", track.title, track.artists, err)
+                logger.error(
+                    "[worker] Failed: %s — %s: %s", track.title, track.artists, err
+                )
                 manager.fail_download(track.id, err)
                 first_pass_failed.append((i, track, err))
 
@@ -381,8 +430,12 @@ class DownloadWorker:
                 time.sleep(self._opts.inter_track_delay_s)
 
         if first_pass_failed:
-            logger.info("[worker] Final retry pass for %d failed track(s)", len(first_pass_failed))
-            print(f"\nFinal retry pass: {len(first_pass_failed)} track(s)")
+            logger.info(
+                "[worker] Final retry pass for %d failed track(s)",
+                len(first_pass_failed),
+            )
+            if self._cli_output:
+                print(f"\nFinal retry pass: {len(first_pass_failed)} track(s)")
 
             recovered = 0
             for i, track, first_err in first_pass_failed:
@@ -400,17 +453,27 @@ class DownloadWorker:
                     recovered += 1
                     size_mb = (
                         os.path.getsize(retry_result.file_path) / (1024 * 1024)
-                        if retry_result.file_path and os.path.exists(retry_result.file_path)
+                        if retry_result.file_path
+                        and os.path.exists(retry_result.file_path)
                         else 0.0
                     )
-                    manager.complete_download(track.id, retry_result.file_path or "", size_mb)
-                    logger.info("[worker] Retry succeeded: %s — %s", track.title, track.artists)
+                    manager.complete_download(
+                        track.id, retry_result.file_path or "", size_mb
+                    )
+                    logger.info(
+                        "[worker] Retry succeeded: %s — %s", track.title, track.artists
+                    )
                     continue
 
                 final_err = retry_result.error or first_err
                 self._failed.append((track.title, track.artists, final_err))
                 manager.fail_download(track.id, final_err)
-                logger.error("[worker] Retry failed: %s — %s: %s", track.title, track.artists, final_err)
+                logger.error(
+                    "[worker] Retry failed: %s — %s: %s",
+                    track.title,
+                    track.artists,
+                    final_err,
+                )
 
             if recovered:
                 logger.info("[worker] Final retry recovered %d track(s)", recovered)
@@ -440,13 +503,14 @@ class DownloadWorker:
         return out
 
     def _print_summary(self, elapsed: float) -> None:
-        succeeded = len(self._tracks) - len(self._failed)
-        print_summary(len(self._tracks), succeeded, self._failed, elapsed)
+        if self._cli_output:
+            succeeded = len(self._tracks) - len(self._failed)
+            print_summary(len(self._tracks), succeeded, self._failed, elapsed)
 
 
 class SpotiflacDownloader:
     def __init__(self, opts: DownloadOptions) -> None:
-        self._opts   = opts
+        self._opts = opts
         self._client = SpotifyMetadataClient()
 
     def run(self, spotify_url: str, loop_minutes: int | None = None) -> None:
@@ -463,7 +527,7 @@ class SpotiflacDownloader:
         # --- YouTube input detection ---
         from .providers.youtube_input import is_youtube_url, resolve_youtube_input
 
-        is_album    = False
+        is_album = False
         is_playlist = False
         collection_name = ""
         tracks: list[TrackMetadata] = []
@@ -472,9 +536,9 @@ class SpotiflacDownloader:
         if is_youtube_url(spotify_url):
             try:
                 result = resolve_youtube_input(spotify_url, self._client)
-                collection_name   = result.collection_name
-                tracks            = result.tracks
-                is_playlist       = result.is_playlist
+                collection_name = result.collection_name
+                tracks = result.tracks
+                is_playlist = result.is_playlist
                 unmatched_samples = result.unmatched_samples
             except Exception as exc:
                 logger.error("YouTube resolve failed: %s", exc)
@@ -482,7 +546,9 @@ class SpotiflacDownloader:
                 return
 
             if unmatched_samples:
-                print(f"  ⚠ {len(unmatched_samples)} track(s) could not be matched on Spotify:")
+                print(
+                    f"  ⚠ {len(unmatched_samples)} track(s) could not be matched on Spotify:"
+                )
                 for sample in unmatched_samples[:10]:
                     print(f"    • {sample}")
         else:
@@ -503,6 +569,7 @@ class SpotiflacDownloader:
             try:
                 from .core.isrc_helper import IsrcHelper
                 from .core.http import HttpClient
+
                 resolver = IsrcHelper(HttpClient("isrc"))
                 for i, track in enumerate(tracks):
                     if not track.isrc:
@@ -517,8 +584,9 @@ class SpotiflacDownloader:
 
         if not is_youtube_url(spotify_url):
             from .providers.spotify_metadata import parse_spotify_url
-            info        = parse_spotify_url(spotify_url)
-            is_album    = info["type"] == "album"
+
+            info = parse_spotify_url(spotify_url)
+            is_album = info["type"] == "album"
             is_playlist = info["type"] == "playlist"
 
         manager = DownloadManager()
@@ -526,17 +594,17 @@ class SpotiflacDownloader:
             manager.add_to_queue(t.id, t.title, t.artists, t.album, t.id)
 
         worker = DownloadWorker(
-            tracks          = tracks,
-            opts            = self._opts,
-            collection_name = collection_name,
-            is_album        = is_album,
-            is_playlist     = is_playlist,
+            tracks=tracks,
+            opts=self._opts,
+            collection_name=collection_name,
+            is_album=is_album,
+            is_playlist=is_playlist,
         )
         worker.run()
 
 
 def _format_seconds(seconds: float) -> str:
-    s = int(round(seconds))
+    s = round(seconds)
     parts = []
     for unit, div in [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)]:
         val, s = divmod(s, div)

@@ -12,8 +12,10 @@ Uso minimo (nel tagger/downloader):
     extra = enrich_metadata(metadata, providers=["deezer", "apple", "tidal", "qobuz"])
     embed_metadata(..., extra_tags=extra.as_tags())
 """
+
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -43,6 +45,7 @@ _MAX_CACHE_ENTRIES = 3000
 # Cache Implementation                                                        #
 # --------------------------------------------------------------------------- #
 
+
 @dataclass
 class _CacheEntry:
     data: EnrichedMetadata
@@ -53,10 +56,15 @@ class _CacheEntry:
 
 
 class _MetadataCache:
+    _FLUSH_INTERVAL_S = 5.0
+
     def __init__(self):
         self._cache: dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
+        self._dirty = False
+        self._flush_timer: threading.Timer | None = None
         self._load_from_disk()
+        atexit.register(self._flush_now)
 
     def _get_cache_key(self, isrc: str, track_name: str, artist_name: str) -> str:
         """Generate a cache key from available identifiers."""
@@ -65,21 +73,27 @@ class _MetadataCache:
         # Fallback to name-based key
         return f"name:{track_name.lower().strip()}|{artist_name.lower().strip()}"
 
-    def get(self, isrc: str, track_name: str, artist_name: str) -> EnrichedMetadata | None:
+    def get(
+        self, isrc: str, track_name: str, artist_name: str
+    ) -> EnrichedMetadata | None:
         key = self._get_cache_key(isrc, track_name, artist_name)
         with self._lock:
             entry = self._cache.get(key)
             if entry and not entry.is_expired():
                 logger.debug("[meta/cache] cache hit for %s", key)
                 return entry.data
-            elif entry:
+            if entry:
                 # Remove expired entry
                 del self._cache[key]
                 self._save_to_disk()
         return None
 
-    def set(self, isrc: str, track_name: str, artist_name: str, data: EnrichedMetadata) -> None:
-        if not data or not any([data.genre, data.label, data.bpm, data.upc, data.isrc, data.cover_url_hd]):
+    def set(
+        self, isrc: str, track_name: str, artist_name: str, data: EnrichedMetadata
+    ) -> None:
+        if not data or not any(
+            [data.genre, data.label, data.bpm, data.upc, data.isrc, data.cover_url_hd]
+        ):
             return
         key = self._get_cache_key(isrc, track_name, artist_name)
         expires_at = time.monotonic() + _CACHE_TTL_S
@@ -87,12 +101,31 @@ class _MetadataCache:
             self._cache[key] = _CacheEntry(data, expires_at)
             # Trim cache if too large
             if len(self._cache) > _MAX_CACHE_ENTRIES:
-                # Remove oldest entries (simple FIFO)
-                keys_to_remove = list(self._cache.keys())[:len(self._cache) - _MAX_CACHE_ENTRIES]
+                keys_to_remove = list(self._cache.keys())[
+                    : len(self._cache) - _MAX_CACHE_ENTRIES
+                ]
                 for k in keys_to_remove:
                     del self._cache[k]
-            self._save_to_disk()
+            self._dirty = True
+            self._schedule_flush()
         logger.debug("[meta/cache] cached %s", key)
+
+    def _schedule_flush(self) -> None:
+        """Schedule a deferred disk write (must be called with lock held)."""
+        if self._flush_timer is not None:
+            return
+        self._flush_timer = threading.Timer(self._FLUSH_INTERVAL_S, self._flush_now)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
+
+    def _flush_now(self) -> None:
+        """Write cache to disk immediately if dirty."""
+        with self._lock:
+            self._flush_timer = None
+            if not self._dirty:
+                return
+            self._save_to_disk()
+            self._dirty = False
 
     def _load_from_disk(self) -> None:
         try:
@@ -100,7 +133,7 @@ class _MetadataCache:
             if cache_dir:
                 os.makedirs(cache_dir, exist_ok=True)
             if os.path.exists(_CACHE_FILE):
-                with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                with open(_CACHE_FILE, encoding="utf-8") as f:
                     data = json.load(f)
                     now = time.monotonic()
                     for key, value in data.items():
@@ -116,10 +149,12 @@ class _MetadataCache:
                                 upc=meta_data.get("upc", ""),
                                 isrc=meta_data.get("isrc", ""),
                                 cover_url_hd=meta_data.get("cover_url_hd", ""),
-                                _sources=meta_data.get("_sources", {})
+                                _sources=meta_data.get("_sources", {}),
                             )
                             self._cache[key] = _CacheEntry(entry_data, expires_at)
-                logger.debug("[meta/cache] loaded %d entries from disk", len(self._cache))
+                logger.debug(
+                    "[meta/cache] loaded %d entries from disk", len(self._cache)
+                )
         except Exception as exc:
             logger.warning("[meta/cache] failed to load from disk: %s", exc)
 
@@ -140,12 +175,9 @@ class _MetadataCache:
                         "upc": entry.data.upc,
                         "isrc": entry.data.isrc,
                         "cover_url_hd": entry.data.cover_url_hd,
-                        "_sources": entry.data._sources
+                        "_sources": entry.data._sources,
                     }
-                    data[key] = {
-                        "data": meta_dict,
-                        "expires_at": entry.expires_at
-                    }
+                    data[key] = {"data": meta_dict, "expires_at": entry.expires_at}
             with open(_CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as exc:
@@ -160,15 +192,17 @@ _metadata_cache = _MetadataCache()
 # Result container                                                             #
 # --------------------------------------------------------------------------- #
 
+
 @dataclass
 class EnrichedMetadata:
     """Campi opzionali ricavati dai provider supplementari."""
-    genre:       str = ""
-    label:       str = ""
-    bpm:         int = 0
-    explicit:    bool = False
-    upc:         str = ""
-    isrc:        str = ""
+
+    genre: str = ""
+    label: str = ""
+    bpm: int = 0
+    explicit: bool = False
+    upc: str = ""
+    isrc: str = ""
     # Cover URL ad alta risoluzione
     cover_url_hd: str = ""
     # Da quale provider viene ogni campo (debug)
@@ -177,15 +211,21 @@ class EnrichedMetadata:
     def as_tags(self) -> dict[str, str]:
         """Ritorna un dict compatibile con embed_metadata(extra_tags=…)."""
         tags: dict[str, str] = {}
-        if self.genre:   tags["GENRE"]        = self.genre
-        if self.label:   tags["ORGANIZATION"] = self.label
-        if self.bpm:     tags["BPM"]          = str(self.bpm)
-        if self.upc:     tags["UPC"]          = self.upc
-        if self.isrc:    tags["ISRC"]         = self.isrc
-        if self.explicit:tags["ITUNESADVISORY"] = "1"
+        if self.genre:
+            tags["GENRE"] = self.genre
+        if self.label:
+            tags["ORGANIZATION"] = self.label
+        if self.bpm:
+            tags["BPM"] = str(self.bpm)
+        if self.upc:
+            tags["UPC"] = self.upc
+        if self.isrc:
+            tags["ISRC"] = self.isrc
+        if self.explicit:
+            tags["ITUNESADVISORY"] = "1"
         return tags
 
-    def merge(self, other: "EnrichedMetadata", source: str) -> None:
+    def merge(self, other: EnrichedMetadata, source: str) -> None:
         """Aggiorna solo i campi vuoti con i dati dell'altro oggetto."""
         for attr in ("genre", "label", "bpm", "upc", "isrc", "cover_url_hd"):
             if not getattr(self, attr) and getattr(other, attr):
@@ -199,6 +239,7 @@ class EnrichedMetadata:
 # --------------------------------------------------------------------------- #
 # Provider: Deezer                                                             #
 # --------------------------------------------------------------------------- #
+
 
 class _DeezerMeta:
     """Lookup per ISRC via API pubblica Deezer."""
@@ -230,14 +271,14 @@ class _DeezerMeta:
                     genres = ad.get("genres", {}).get("data", [])
                     if genres:
                         out.genre = genres[0].get("name", "")
-                    out.label   = ad.get("label", "")
-                    out.upc     = ad.get("upc", "")
+                    out.label = ad.get("label", "")
+                    out.upc = ad.get("upc", "")
                     # Cover 1000x1000
                     out.cover_url_hd = ad.get("cover_xl") or ad.get("cover_big", "")
 
-            out.bpm      = int(d.get("bpm") or 0)
+            out.bpm = int(d.get("bpm") or 0)
             out.explicit = bool(d.get("explicit_lyrics"))
-            out.isrc     = d.get("isrc", "")
+            out.isrc = d.get("isrc", "")
         except Exception as exc:
             logger.debug("[meta/deezer] %s", exc)
         return out
@@ -246,6 +287,7 @@ class _DeezerMeta:
 # --------------------------------------------------------------------------- #
 # Provider: Apple Music (iTunes Search API — free, no auth)                   #
 # --------------------------------------------------------------------------- #
+
 
 class _AppleMusicMeta:
     """
@@ -260,14 +302,16 @@ class _AppleMusicMeta:
         self._s = requests.Session()
         self._s.headers["User-Agent"] = _UA
 
-    def fetch(self, track_name: str, artist_name: str, isrc: str = "") -> EnrichedMetadata:
+    def fetch(
+        self, track_name: str, artist_name: str, isrc: str = ""
+    ) -> EnrichedMetadata:
         out = EnrichedMetadata()
         item = self._search(track_name, artist_name)
         if not item:
             return out
-        out.genre    = item.get("primaryGenreName", "")
+        out.genre = item.get("primaryGenreName", "")
         out.explicit = item.get("trackExplicitness") == "explicit"
-        # Cover 600×600: rimpiazza "100x100" con "600x600"
+        # Cover 600x600: rimpiazza "100x100" con "600x600"
         raw_art = item.get("artworkUrl100", "")
         out.cover_url_hd = raw_art.replace("100x100", "600x600")
         # Collection (album) info → label non disponibile via iTunes pubblica
@@ -278,10 +322,10 @@ class _AppleMusicMeta:
             r = self._s.get(
                 self.SEARCH,
                 params={
-                    "term":    f"{title} {artist}",
-                    "media":   "music",
-                    "entity":  "song",
-                    "limit":   5,
+                    "term": f"{title} {artist}",
+                    "media": "music",
+                    "entity": "song",
+                    "limit": 5,
                     "country": "US",
                 },
                 timeout=12,
@@ -306,13 +350,16 @@ class _AppleMusicMeta:
 # Provider: Tidal (via API mirror — stesso sistema di tidal.py)               #
 # --------------------------------------------------------------------------- #
 
+
 class _TidalMeta:
     """
     Recupera metadati extra da Tidal tramite le API mirror già usate
     per il download (ricerca per track_name/artist).
     """
 
-    _APIS = [
+    from typing import ClassVar
+
+    _APIS: ClassVar[list[str]] = [
         "https://eu-central.monochrome.tf",
         "https://us-west.monochrome.tf",
         "https://api.monochrome.tf",
@@ -359,24 +406,29 @@ class _TidalMeta:
             return out
         album = track_data.get("album", {})
         out.cover_url_hd = album.get("cover", "")
-        out.explicit     = bool(track_data.get("explicit"))
-        out.isrc         = track_data.get("isrc", "")
+        out.explicit = bool(track_data.get("explicit"))
+        out.isrc = track_data.get("isrc", "")
         return out
 
     def _search_track(self, title: str, artist: str) -> dict | None:
         from urllib.parse import quote
+
         q = quote(f"{artist} {title}")
         for api in self._merged_apis:
             for endpoint in (
-                    f"{api.rstrip('/')}/search/?s={q}&limit=5",
-                    f"{api.rstrip('/')}/search?s={q}&limit=5",
+                f"{api.rstrip('/')}/search/?s={q}&limit=5",
+                f"{api.rstrip('/')}/search?s={q}&limit=5",
             ):
                 try:
                     r = self._s.get(endpoint, timeout=8)
                     if not r.ok:
                         continue
                     data = r.json()
-                    items = data if isinstance(data, list) else data.get("tracks", {}).get("items", [])
+                    items = (
+                        data
+                        if isinstance(data, list)
+                        else data.get("tracks", {}).get("items", [])
+                    )
                     if items:
                         return items[0]
                 except Exception:
@@ -387,6 +439,7 @@ class _TidalMeta:
 # --------------------------------------------------------------------------- #
 # Provider: Qobuz (usa l'API firmata già in qobuz.py)                         #
 # --------------------------------------------------------------------------- #
+
 
 class _QobuzMeta:
     """
@@ -402,7 +455,10 @@ class _QobuzMeta:
         if self._provider is None:
             try:
                 from ..providers.qobuz import QobuzProvider
-                self._provider = QobuzProvider(qobuz_token=self._qobuz_token)  # ← aggiunto
+
+                self._provider = QobuzProvider(
+                    qobuz_token=self._qobuz_token
+                )  # ← aggiunto
             except Exception as exc:
                 logger.debug("[meta/qobuz] cannot init provider: %s", exc)
         return self._provider
@@ -423,34 +479,39 @@ class _QobuzMeta:
                 return out
             track = items[0]
             album = track.get("album", {})
-            out.genre        = (album.get("genre", {}) or {}).get("name", "")
-            out.label        = album.get("label", {}).get("name", "") if isinstance(album.get("label"), dict) else ""
+            out.genre = (album.get("genre", {}) or {}).get("name", "")
+            out.label = (
+                album.get("label", {}).get("name", "")
+                if isinstance(album.get("label"), dict)
+                else ""
+            )
             out.cover_url_hd = album.get("image", {}).get("large", "")
-            out.explicit     = bool(track.get("parental_warning"))
-            out.isrc         = track.get("isrc", "")
-            out.upc          = album.get("upc", "")
+            out.explicit = bool(track.get("parental_warning"))
+            out.isrc = track.get("isrc", "")
+            out.upc = album.get("upc", "")
         except Exception as exc:
             logger.debug("[meta/qobuz] %s", exc)
         return out
+
 
 # Public API                                                                   #
 # --------------------------------------------------------------------------- #
 
 _PROVIDERS = {
     "deezer": _DeezerMeta,
-    "apple":  _AppleMusicMeta,
-    "tidal":  _TidalMeta,
-    "qobuz":  _QobuzMeta,
+    "apple": _AppleMusicMeta,
+    "tidal": _TidalMeta,
+    "qobuz": _QobuzMeta,
 }
 
 
 def enrich_metadata(
-        track_name:  str,
-        artist_name: str,
-        isrc:        str = "",
-        providers:   list[str] | None = None,
-        timeout_s:   float = 15.0,
-        qobuz_token: str | None = None,
+    track_name: str,
+    artist_name: str,
+    isrc: str = "",
+    providers: list[str] | None = None,
+    timeout_s: float = 15.0,
+    qobuz_token: str | None = None,
 ) -> EnrichedMetadata:
     """
     Interroga i provider in parallelo e unisce i risultati.
@@ -469,7 +530,9 @@ def enrich_metadata(
     # Check cache first
     cached = _metadata_cache.get(isrc, track_name, artist_name)
     if cached:
-        logger.debug("[meta/enrich] cache hit for '%s' by '%s'", track_name, artist_name)
+        logger.debug(
+            "[meta/enrich] cache hit for '%s' by '%s'", track_name, artist_name
+        )
         return cached
 
     if providers is None:
@@ -483,18 +546,15 @@ def enrich_metadata(
             return name, EnrichedMetadata()
         try:
             # ← istanzia _QobuzMeta con il token, gli altri invariati
-            if name == "qobuz":
-                inst = cls(qobuz_token=qobuz_token)
-            else:
-                inst = cls()
+            inst = cls(qobuz_token=qobuz_token) if name == "qobuz" else cls()
 
             if name == "deezer":
                 return name, inst.fetch(isrc)
-            elif name == "apple":
+            if name == "apple":
                 return name, inst.fetch(track_name, artist_name, isrc)
-            elif name == "tidal":
+            if name == "tidal":
                 return name, inst.fetch(track_name, artist_name)
-            elif name == "qobuz":
+            if name == "qobuz":
                 return name, inst.fetch(isrc)
         except Exception as exc:
             logger.debug("[meta/enrich] %s failed: %s", name, exc)
@@ -512,7 +572,10 @@ def enrich_metadata(
         except TimeoutError:
             # Trova quali provider non hanno finito in tempo
             unfinished = [futs[fut] for fut in futs if not fut.done()]
-            logger.warning("[meta/enrich] Timeout! Provider lenti ignorati: %s", ", ".join(unfinished))
+            logger.warning(
+                "[meta/enrich] Timeout! Provider lenti ignorati: %s",
+                ", ".join(unfinished),
+            )
 
     # Merge in ordine di priorità
     for name in providers:

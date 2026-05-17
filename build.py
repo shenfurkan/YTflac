@@ -7,6 +7,7 @@ Usage:
     python build.py --installer  # also compile Inno Setup installer (needs ISCC.exe in PATH)
     python build.py --clean      # remove build/, dist/, *.spec, installer/ and exit
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,12 +62,18 @@ def build_exe(onefile: bool = True) -> Path:
     ensure_pyinstaller()
 
     args = [
-        sys.executable, "-m", "PyInstaller",
-        "--noconfirm", "--clean",
-        "--name", APP_NAME,
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--name",
+        APP_NAME,
         "--windowed",
-        "--icon", str(ICON),
-        "--add-data", f"images{';' if sys.platform == 'win32' else ':'}images",
+        "--icon",
+        str(ICON),
+        "--add-data",
+        f"images{';' if sys.platform == 'win32' else ':'}images",
     ]
     if onefile:
         args.append("--onefile")
@@ -110,9 +117,17 @@ def build_installer() -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="YtFLAC build helper")
-    parser.add_argument("--onedir", action="store_true", help="Build folder bundle instead of single file")
-    parser.add_argument("--installer", action="store_true", help="Also compile the Inno Setup installer")
-    parser.add_argument("--clean", action="store_true", help="Remove build artifacts and exit")
+    parser.add_argument(
+        "--onedir",
+        action="store_true",
+        help="Build folder bundle instead of single file",
+    )
+    parser.add_argument(
+        "--installer", action="store_true", help="Also compile the Inno Setup installer"
+    )
+    parser.add_argument(
+        "--clean", action="store_true", help="Remove build artifacts and exit"
+    )
     args = parser.parse_args()
 
     if args.clean:

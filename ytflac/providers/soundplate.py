@@ -4,6 +4,7 @@ from ..core.http import HttpClient
 
 logger = logging.getLogger(__name__)
 
+
 class SoundplateProvider:
     """Risolve ISRC tramite l'API di Soundplate."""
 

@@ -3,6 +3,7 @@ from ..providers.soundplate import SoundplateProvider
 from ..providers.songstats import SongstatsProvider
 from .isrc_finder import IsrcFinder
 
+
 class IsrcHelper:
     """Gestore centralizzato per la risoluzione ISRC con fallback."""
 
@@ -14,7 +15,8 @@ class IsrcHelper:
     def get_isrc(self, track_id: str) -> str:
         # 1. Cache
         cached = get_cached_isrc(track_id)
-        if cached: return cached
+        if cached:
+            return cached
 
         # 2. Sequenza di risoluzione
         isrc = self.finder.find_isrc(track_id)

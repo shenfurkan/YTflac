@@ -16,8 +16,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import requests
 
 from ..core.errors import (
-    TrackNotFoundError, NetworkError,
-    ParseError, SpotiflacError, ErrorKind,
+    AuthError,
+    TrackNotFoundError,
+    NetworkError,
+    ParseError,
+    SpotiflacError,
+    ErrorKind,
 )
 from ..core.http import RetryConfig
 from ..core.models import TrackMetadata, DownloadResult
@@ -27,7 +31,9 @@ from .base import BaseProvider
 from ..core.musicbrainz import AsyncMBFetch
 from ..core.download_validation import validate_downloaded_track
 from ..core.console import (
-    print_source_banner, print_api_failure, print_quality_fallback,
+    print_source_banner,
+    print_api_failure,
+    print_quality_fallback,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_API_BASE       = "https://www.qobuz.com/api.json/0.2"
+_API_BASE = "https://www.qobuz.com/api.json/0.2"
 _DEFAULT_APP_ID = "712109809"
 _DEFAULT_APP_SECRET = "589be88e4538daea11f509d29e4a23b1"
 _DEFAULT_UA = (
@@ -44,14 +50,14 @@ _DEFAULT_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/146.0.0.0 Safari/537.36"
 )
-_CREDS_TTL        = 24 * 3600
-_PROBE_ISRC       = "USUM71703861"
-_OPEN_URL         = "https://open.qobuz.com/track/"
+_CREDS_TTL = 24 * 3600
+_PROBE_ISRC = "USUM71703861"
+_OPEN_URL = "https://open.qobuz.com/track/"
 _CREDS_CACHE_FILE = os.path.join(
     os.path.expanduser("~"), ".cache", "spotiflac", "qobuz-credentials.json"
 )
 
-_BUNDLE_RE    = re.compile(
+_BUNDLE_RE = re.compile(
     r'<script[^>]+src="([^"]+/js/main\.js|/resources/[^"]+/js/main\.js)"'
 )
 _API_CONFIG_RE = re.compile(
@@ -66,7 +72,7 @@ _STREAM_APIS: list[str] = [
     "https://qobuz.squid.wtf/api/download-music?country=US&track_id=",
     "https://dl.musicdl.me/qobuz/download",
     "https://api.zarz.moe/dl/qbz",
-    "https://www.musicdl.me/api/qobuz/download"
+    "https://www.musicdl.me/api/qobuz/download",
 ]
 
 _MUSICDL_APIS = {
@@ -77,20 +83,20 @@ _MUSICDL_APIS = {
 
 _QUALITY_FALLBACK: dict[str, list[str]] = {
     "27": ["27", "7", "6"],
-    "7":  ["7", "6"],
-    "6":  ["6"],
-    "5":  ["6"],
-    "":   ["6"],
+    "7": ["7", "6"],
+    "6": ["6"],
+    "5": ["6"],
+    "": ["6"],
 }
 
 # FIX #3: mappa i valori Tidal-style verso i codici numerici Qobuz
 _TIDAL_TO_QOBUZ_QUALITY: dict[str, str] = {
-    "HI_RES":  "27",
+    "HI_RES": "27",
     "LOSSLESS": "6",
 }
 
 _API_TIMEOUT_S = 8
-_MAX_RETRIES   = 1
+_MAX_RETRIES = 1
 _RETRY_DELAY_S = 0.3
 
 
@@ -99,65 +105,177 @@ _RETRY_DELAY_S = 0.3
 # ---------------------------------------------------------------------------
 @dataclass
 class QobuzCredentials:
-    app_id:          str
-    app_secret:      str
-    source:          str   = "embedded-default"
-    fetched_at:      float = field(default_factory=time.time)
+    app_id: str
+    app_secret: str
+    source: str = "embedded-default"
+    fetched_at: float = field(default_factory=time.time)
     user_auth_token: str | None = None
 
     def is_fresh(self) -> bool:
         return (
-                bool(self.app_id)
-                and bool(self.app_secret)
-                and (time.time() - self.fetched_at) < _CREDS_TTL
+            bool(self.app_id)
+            and bool(self.app_secret)
+            and (time.time() - self.fetched_at) < _CREDS_TTL
         )
 
     def to_dict(self) -> dict:
         return {
-            "app_id":          self.app_id,
-            "app_secret":      self.app_secret,
-            "source":          self.source,
+            "app_id": self.app_id,
+            "app_secret": self.app_secret,
+            "source": self.source,
             "fetched_at_unix": int(self.fetched_at),
             "user_auth_token": self.user_auth_token,
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "QobuzCredentials":
+    def from_dict(cls, d: dict) -> QobuzCredentials:
         token = d.get("user_auth_token") or os.environ.get("QOBUZ_AUTH_TOKEN")
         return cls(
-            app_id          = d.get("app_id", ""),
-            app_secret      = d.get("app_secret", ""),
-            source          = d.get("source", ""),
-            fetched_at      = float(d.get("fetched_at_unix", 0)),
-            user_auth_token = token,
+            app_id=d.get("app_id", ""),
+            app_secret=d.get("app_secret", ""),
+            source=d.get("source", ""),
+            fetched_at=float(d.get("fetched_at_unix", 0)),
+            user_auth_token=token,
         )
 
     @classmethod
-    def default(cls) -> "QobuzCredentials":
+    def default(cls) -> QobuzCredentials:
         return cls(_DEFAULT_APP_ID, _DEFAULT_APP_SECRET, "embedded-default")
 
-_QOBUZ_MUSICDL_SEED = bytes([
-    0x73,0x70,0x6f,0x74,0x69,0x66,
-    0x6c,0x61,0x63,0x3a,0x71,0x6f,
-    0x62,0x75,0x7a,0x3a,0x6d,0x75,0x73,0x69,0x63,0x64,0x6c,0x3a,0x76,0x31,
-])
-_QOBUZ_MUSICDL_AAD = bytes([
-    0x71,0x6f,0x62,0x75,0x7a,0x7c,0x6d,0x75,0x73,0x69,0x63,0x64,
-    0x6c,0x7c,0x64,0x65,0x62,0x75,0x67,0x7c,0x76,0x31,
-])
-_QOBUZ_MUSICDL_NONCE = bytes([
-    0x91,0x2a,0x5c,0x77,0x0f,0x33,0xa8,0x14,0x62,0x9d,0xce,0x41,
-])
-_QOBUZ_MUSICDL_CIPHERTEXT_TAG = bytes([
-    0xf3,0x4a,0x83,0x45,0x24,0xb6,0x22,0xaf,0xd6,0xc3,0x6e,0x2d,
-    0x56,0xd1,0xbb,0x0b,0xe9,0x1b,0x4f,0x1c,0x5f,0x41,0x55,0xc2,
-    0xc6,0xdf,0xad,0x21,0x58,0xfe,0xd5,0xb8,0x2d,0x29,0xf9,0x9e,
-    0x6f,0xd6,
-    0x69,0x0c,0x42,0x70,0x14,0x83,0xff,0x14,0xc8,0xbe,0x17,0x00,
-    0x69,0xb1,0xfe,0xbb,
-])
+
+_QOBUZ_MUSICDL_SEED = bytes(
+    [
+        0x73,
+        0x70,
+        0x6F,
+        0x74,
+        0x69,
+        0x66,
+        0x6C,
+        0x61,
+        0x63,
+        0x3A,
+        0x71,
+        0x6F,
+        0x62,
+        0x75,
+        0x7A,
+        0x3A,
+        0x6D,
+        0x75,
+        0x73,
+        0x69,
+        0x63,
+        0x64,
+        0x6C,
+        0x3A,
+        0x76,
+        0x31,
+    ]
+)
+_QOBUZ_MUSICDL_AAD = bytes(
+    [
+        0x71,
+        0x6F,
+        0x62,
+        0x75,
+        0x7A,
+        0x7C,
+        0x6D,
+        0x75,
+        0x73,
+        0x69,
+        0x63,
+        0x64,
+        0x6C,
+        0x7C,
+        0x64,
+        0x65,
+        0x62,
+        0x75,
+        0x67,
+        0x7C,
+        0x76,
+        0x31,
+    ]
+)
+_QOBUZ_MUSICDL_NONCE = bytes(
+    [
+        0x91,
+        0x2A,
+        0x5C,
+        0x77,
+        0x0F,
+        0x33,
+        0xA8,
+        0x14,
+        0x62,
+        0x9D,
+        0xCE,
+        0x41,
+    ]
+)
+_QOBUZ_MUSICDL_CIPHERTEXT_TAG = bytes(
+    [
+        0xF3,
+        0x4A,
+        0x83,
+        0x45,
+        0x24,
+        0xB6,
+        0x22,
+        0xAF,
+        0xD6,
+        0xC3,
+        0x6E,
+        0x2D,
+        0x56,
+        0xD1,
+        0xBB,
+        0x0B,
+        0xE9,
+        0x1B,
+        0x4F,
+        0x1C,
+        0x5F,
+        0x41,
+        0x55,
+        0xC2,
+        0xC6,
+        0xDF,
+        0xAD,
+        0x21,
+        0x58,
+        0xFE,
+        0xD5,
+        0xB8,
+        0x2D,
+        0x29,
+        0xF9,
+        0x9E,
+        0x6F,
+        0xD6,
+        0x69,
+        0x0C,
+        0x42,
+        0x70,
+        0x14,
+        0x83,
+        0xFF,
+        0x14,
+        0xC8,
+        0xBE,
+        0x17,
+        0x00,
+        0x69,
+        0xB1,
+        0xFE,
+        0xBB,
+    ]
+)
 
 _qobuz_musicdl_key: str | None = None
+
 
 def _get_qobuz_musicdl_key() -> str:
     global _qobuz_musicdl_key
@@ -176,7 +294,7 @@ def _get_qobuz_musicdl_key() -> str:
 
 def _load_cached_credentials() -> QobuzCredentials | None:
     try:
-        with open(_CREDS_CACHE_FILE, "r", encoding="utf-8") as f:
+        with open(_CREDS_CACHE_FILE, encoding="utf-8") as f:
             return QobuzCredentials.from_dict(json.load(f))
     except FileNotFoundError:
         return None
@@ -196,7 +314,7 @@ def _save_cached_credentials(creds: QobuzCredentials) -> None:
 
 def _scrape_credentials(session: requests.Session) -> QobuzCredentials:
     headers = {"User-Agent": _DEFAULT_UA}
-    resp    = session.get(f"{_OPEN_URL}1", headers=headers, timeout=15)
+    resp = session.get(f"{_OPEN_URL}1", headers=headers, timeout=15)
     resp.raise_for_status()
 
     m = _BUNDLE_RE.search(resp.text)
@@ -215,9 +333,9 @@ def _scrape_credentials(session: requests.Session) -> QobuzCredentials:
         raise RuntimeError("app_id/app_secret not found in Qobuz bundle")
 
     return QobuzCredentials(
-        app_id     = cm.group("app_id"),
-        app_secret = cm.group("app_secret"),
-        source     = bundle_url,
+        app_id=cm.group("app_id"),
+        app_secret=cm.group("app_secret"),
+        source=bundle_url,
     )
 
 
@@ -226,8 +344,8 @@ def _scrape_credentials(session: requests.Session) -> QobuzCredentials:
 # ---------------------------------------------------------------------------
 def _compute_signature(path: str, params: dict, timestamp: str, secret: str) -> str:
     normalized = path.strip("/").replace("/", "")
-    excluded   = {"app_id", "request_ts", "request_sig"}
-    payload    = normalized
+    excluded = {"app_id", "request_ts", "request_sig"}
+    payload = normalized
     for key in sorted(k for k in params if k not in excluded):
         val = params[key]
         if isinstance(val, list):
@@ -273,18 +391,24 @@ def _extract_stream_url_from_json(data: dict) -> str | None:
 
 
 def _fetch_stream_url_once(
-        api_base:  str,
-        track_id:  int,
-        quality:   str,
-        timeout_s: int = _API_TIMEOUT_S,
+    api_base: str,
+    track_id: int,
+    quality: str,
+    timeout_s: int = _API_TIMEOUT_S,
 ) -> str:
     is_musicdl = api_base in _MUSICDL_APIS
-    delay      = _RETRY_DELAY_S
+    delay = _RETRY_DELAY_S
     last_err: Exception = RuntimeError("no attempts made")
 
     for attempt in range(_MAX_RETRIES + 1):
         if attempt > 0:
-            logger.debug("[qobuz] retry %d/%d for %s after %.1fs", attempt, _MAX_RETRIES, api_base, delay)
+            logger.debug(
+                "[qobuz] retry %d/%d for %s after %.1fs",
+                attempt,
+                _MAX_RETRIES,
+                api_base,
+                delay,
+            )
             time.sleep(delay)
             delay *= 2
 
@@ -293,7 +417,7 @@ def _fetch_stream_url_once(
                 payload = {
                     "quality": _map_musicdl_quality(quality),
                     "upload_to_r2": False,
-                    "url": f"{_OPEN_URL}{track_id}"
+                    "url": f"{_OPEN_URL}{track_id}",
                 }
                 resp = requests.post(
                     api_base,
@@ -305,7 +429,7 @@ def _fetch_stream_url_once(
                 url = _build_stream_url(api_base, track_id, quality)
                 resp = requests.get(
                     url,
-                    headers={"User-Agent":  _DEFAULT_UA},
+                    headers={"User-Agent": _DEFAULT_UA},
                     timeout=timeout_s,
                 )
 
@@ -363,15 +487,17 @@ def _fetch_stream_url_once(
 
 
 def _fetch_stream_url_parallel(
-        apis:      list[str],
-        track_id:  int,
-        quality:   str,
-        timeout_s: int = _API_TIMEOUT_S,
+    apis: list[str],
+    track_id: int,
+    quality: str,
+    timeout_s: int = _API_TIMEOUT_S,
 ) -> tuple[str, str]:
     if not apis:
-        raise SpotiflacError(ErrorKind.UNAVAILABLE, "no stream APIs configured", "qobuz")
+        raise SpotiflacError(
+            ErrorKind.UNAVAILABLE, "no stream APIs configured", "qobuz"
+        )
 
-    start  = time.time()
+    start = time.time()
     errors: list[str] = []
 
     pool = ThreadPoolExecutor(max_workers=min(len(apis), 8))
@@ -384,7 +510,11 @@ def _fetch_stream_url_parallel(
             api = futures[fut]
             try:
                 stream_url = fut.result()
-                logger.debug("[qobuz] parallel: got URL from %s in %.2fs", api, time.time() - start)
+                logger.debug(
+                    "[qobuz] parallel: got URL from %s in %.2fs",
+                    api,
+                    time.time() - start,
+                )
                 pool.shutdown(wait=False, cancel_futures=True)
                 record_success("qobuz", api)
                 print_source_banner("qobuz", api, quality)
@@ -401,7 +531,7 @@ def _fetch_stream_url_parallel(
 
     raise SpotiflacError(
         ErrorKind.UNAVAILABLE,
-        f"all {len(apis)} Qobuz stream APIs failed in {time.time()-start:.1f}s — {'; '.join(errors)}",
+        f"all {len(apis)} Qobuz stream APIs failed in {time.time() - start:.1f}s — {'; '.join(errors)}",
         "qobuz",
     )
 
@@ -414,12 +544,12 @@ class QobuzProvider(BaseProvider):
 
     def __init__(self, timeout_s: int = 30, qobuz_token: str | None = None) -> None:
         super().__init__(
-            timeout_s = timeout_s,
-            retry     = RetryConfig(max_attempts=2),
-            headers   = {"User-Agent": _DEFAULT_UA, "Accept": "application/json"},
+            timeout_s=timeout_s,
+            retry=RetryConfig(max_attempts=2),
+            headers={"User-Agent": _DEFAULT_UA, "Accept": "application/json"},
         )
-        self._session    = self._http._session
-        self._creds:      QobuzCredentials | None = None
+        self._session = self._http._session
+        self._creds: QobuzCredentials | None = None
         self._creds_lock = threading.Lock()
         self._qobuz_token = qobuz_token or os.environ.get("QOBUZ_AUTH_TOKEN")
 
@@ -461,19 +591,21 @@ class QobuzProvider(BaseProvider):
 
     def _probe_credentials(self, creds: QobuzCredentials) -> bool:
         try:
-            resp = self._do_signed_get("track/search", {"query": _PROBE_ISRC, "limit": "1"}, creds)
+            resp = self._do_signed_get(
+                "track/search", {"query": _PROBE_ISRC, "limit": "1"}, creds
+            )
             return resp.json().get("tracks", {}).get("total", 0) > 0
         except Exception:
             return False
 
     def _do_signed_get(
-            self,
-            path:               str,
-            params:             dict,
-            creds:              QobuzCredentials | None = None,
-            force_refresh:      bool = False,
-            use_fallback_token: bool = False,
-            _depth:             int  = 0,
+        self,
+        path: str,
+        params: dict,
+        creds: QobuzCredentials | None = None,
+        force_refresh: bool = False,
+        use_fallback_token: bool = False,
+        _depth: int = 0,
     ) -> requests.Response:
         if creds is None:
             creds = self._get_credentials(force_refresh=force_refresh)
@@ -482,27 +614,33 @@ class QobuzProvider(BaseProvider):
         signature = _compute_signature(path, params, timestamp, creds.app_secret)
         req_params = {
             **params,
-            "app_id":      creds.app_id,
-            "request_ts":  timestamp,
+            "app_id": creds.app_id,
+            "request_ts": timestamp,
             "request_sig": signature,
         }
-        url     = f"{_API_BASE}/{path.strip('/')}"
+        url = f"{_API_BASE}/{path.strip('/')}"
         headers = {"X-App-Id": creds.app_id}
         if creds.user_auth_token and use_fallback_token:
             headers["X-User-Auth-Token"] = creds.user_auth_token
 
         resp = self._session.get(url, params=req_params, headers=headers, timeout=20)
 
-        if resp.status_code in (400, 401) and _depth < 2:
+        if resp.status_code in (400, 401, 403) and _depth < 2:
             if creds.user_auth_token and not use_fallback_token and not force_refresh:
                 return self._do_signed_get(
-                    path, params, creds=creds,
-                    force_refresh=False, use_fallback_token=True, _depth=_depth + 1,
+                    path,
+                    params,
+                    creds=creds,
+                    force_refresh=False,
+                    use_fallback_token=True,
+                    _depth=_depth + 1,
                 )
             if not force_refresh:
                 return self._do_signed_get(
-                    path, params,
-                    force_refresh=True, use_fallback_token=use_fallback_token,
+                    path,
+                    params,
+                    force_refresh=True,
+                    use_fallback_token=use_fallback_token,
                     _depth=_depth + 1,
                 )
         return resp
@@ -510,7 +648,7 @@ class QobuzProvider(BaseProvider):
     def _search_by_isrc(self, isrc: str) -> dict:
         if isrc.startswith("qobuz_"):
             track_id = isrc.removeprefix("qobuz_")
-            resp     = self._do_signed_get("track/get", {"track_id": track_id})
+            resp = self._do_signed_get("track/get", {"track_id": track_id})
             if resp.status_code != 200:
                 self._raise_api_error(resp, "track/get")
             return resp.json()
@@ -525,7 +663,7 @@ class QobuzProvider(BaseProvider):
         try:
             data = resp.json()
         except ValueError as exc:
-            raise ParseError(self.name, f"invalid JSON: {body[:200]}", exc)
+            raise ParseError(self.name, f"invalid JSON: {body[:200]}") from exc
 
         items = data.get("tracks", {}).get("items", [])
         if not items:
@@ -542,13 +680,17 @@ class QobuzProvider(BaseProvider):
 
         for i, q in enumerate(chain):
             try:
-                winner_api, stream_url = _fetch_stream_url_parallel(ordered_apis, track_id, q, _API_TIMEOUT_S)
+                _winner_api, stream_url = _fetch_stream_url_parallel(
+                    ordered_apis, track_id, q, _API_TIMEOUT_S
+                )
                 return stream_url
             except SpotiflacError as exc:
                 last_exc = exc
                 if allow_fallback and i + 1 < len(chain):
                     print_quality_fallback("qobuz", q, chain[i + 1])
-                    logger.warning("[qobuz] quality %s unavailable, trying %s", q, chain[i + 1])
+                    logger.warning(
+                        "[qobuz] quality %s unavailable, trying %s", q, chain[i + 1]
+                    )
 
         raise last_exc or SpotiflacError(
             ErrorKind.UNAVAILABLE,
@@ -557,24 +699,24 @@ class QobuzProvider(BaseProvider):
         )
 
     def download_track(
-            self,
-            metadata:   TrackMetadata,
-            output_dir: str,
-            *,
-            filename_format:     str  = "{title} - {artist}",
-            position:            int  = 1,
-            include_track_num:   bool = False,
-            use_album_track_num: bool = False,
-            first_artist_only:   bool = False,
-            allow_fallback:      bool = True,
-            quality:             str  = "6",
-            embed_genre:         bool = True,
-            single_genre:        bool = True,
-            embed_lyrics:            bool = False,
-            lyrics_providers:        list[str] | None = None,
-            lyrics_spotify_token:    str = "",
-            enrich_metadata:         bool = False,
-            enrich_providers:        list[str] | None = None,
+        self,
+        metadata: TrackMetadata,
+        output_dir: str,
+        *,
+        filename_format: str = "{title} - {artist}",
+        position: int = 1,
+        include_track_num: bool = False,
+        use_album_track_num: bool = False,
+        first_artist_only: bool = False,
+        allow_fallback: bool = True,
+        quality: str = "6",
+        embed_genre: bool = True,
+        single_genre: bool = True,
+        embed_lyrics: bool = False,
+        lyrics_providers: list[str] | None = None,
+        lyrics_spotify_token: str = "",
+        enrich_metadata: bool = False,
+        enrich_providers: list[str] | None = None,
     ) -> DownloadResult:
         # FIX #3: normalizza la quality Tidal-style verso i codici numerici Qobuz.
         # Se quality è "LOSSLESS" o "HI_RES" (passata da downloader.py dopo il Fix #1),
@@ -593,7 +735,7 @@ class QobuzProvider(BaseProvider):
             if (enrich_metadata or embed_genre) and metadata.isrc:
                 mb_fetcher = AsyncMBFetch(metadata.isrc)
 
-            track    = self._search_by_isrc(metadata.isrc)
+            track = self._search_by_isrc(metadata.isrc)
             track_id = track.get("id")
             if not track_id:
                 if self._log_cb:
@@ -603,8 +745,13 @@ class QobuzProvider(BaseProvider):
                 self._log_cb("Qobuz: track found", "success")
 
             dest = self._build_output_path(
-                metadata, output_dir, filename_format,
-                position, include_track_num, use_album_track_num, first_artist_only,
+                metadata,
+                output_dir,
+                filename_format,
+                position,
+                include_track_num,
+                use_album_track_num,
+                first_artist_only,
             )
             if self._file_exists(dest):
                 if self._log_cb:
@@ -628,24 +775,24 @@ class QobuzProvider(BaseProvider):
                 res = mb_fetcher.result()
                 if res:
                     mapping = {
-                        "mbid_track":       "MUSICBRAINZ_TRACKID",
-                        "mbid_album":       "MUSICBRAINZ_ALBUMID",
-                        "mbid_artist":      "MUSICBRAINZ_ARTISTID",
-                        "mbid_relgroup":    "MUSICBRAINZ_RELEASEGROUPID",
+                        "mbid_track": "MUSICBRAINZ_TRACKID",
+                        "mbid_album": "MUSICBRAINZ_ALBUMID",
+                        "mbid_artist": "MUSICBRAINZ_ARTISTID",
+                        "mbid_relgroup": "MUSICBRAINZ_RELEASEGROUPID",
                         "mbid_albumartist": "MUSICBRAINZ_ALBUMARTISTID",
-                        "barcode":          "BARCODE",
-                        "label":            "LABEL",
-                        "organization":     "ORGANIZATION",
-                        "country":          "RELEASECOUNTRY",
-                        "script":           "SCRIPT",
-                        "status":           "RELEASESTATUS",
-                        "media":            "MEDIA",
-                        "type":             "RELEASETYPE",
-                        "artist_sort":      "ARTISTSORT",
+                        "barcode": "BARCODE",
+                        "label": "LABEL",
+                        "organization": "ORGANIZATION",
+                        "country": "RELEASECOUNTRY",
+                        "script": "SCRIPT",
+                        "status": "RELEASESTATUS",
+                        "media": "MEDIA",
+                        "type": "RELEASETYPE",
+                        "artist_sort": "ARTISTSORT",
                         "albumartist_sort": "ALBUMARTISTSORT",
-                        "catalognumber":    "CATALOGNUMBER",
-                        "bpm":              "BPM",
-                        "genre":            "GENRE"
+                        "catalognumber": "CATALOGNUMBER",
+                        "bpm": "BPM",
+                        "genre": "GENRE",
                     }
 
                     for mb_key, tag_name in mapping.items():
@@ -661,17 +808,18 @@ class QobuzProvider(BaseProvider):
             _print_mb_summary(mb_tags)
 
             embed_metadata(
-                dest, metadata,
-                first_artist_only       = first_artist_only,
-                cover_url               = metadata.cover_url,
-                session                 = self._session,
-                extra_tags              = mb_tags,
-                embed_lyrics            = embed_lyrics,
-                lyrics_providers        = lyrics_providers,
-                lyrics_spotify_token    = lyrics_spotify_token,
-                enrich                  = enrich_metadata,
-                enrich_providers        = enrich_providers,
-                enrich_qobuz_token      = self._qobuz_token or "",
+                dest,
+                metadata,
+                first_artist_only=first_artist_only,
+                cover_url=metadata.cover_url,
+                session=self._session,
+                extra_tags=mb_tags,
+                embed_lyrics=embed_lyrics,
+                lyrics_providers=lyrics_providers,
+                lyrics_spotify_token=lyrics_spotify_token,
+                enrich=enrich_metadata,
+                enrich_providers=enrich_providers,
+                enrich_qobuz_token=self._qobuz_token or "",
             )
             if self._log_cb:
                 self._log_cb("Qobuz: tags & lyrics written", "success")
@@ -686,6 +834,10 @@ class QobuzProvider(BaseProvider):
 
     @staticmethod
     def _raise_api_error(resp: requests.Response, endpoint: str) -> None:
+        if resp.status_code in (401, 403):
+            raise AuthError("qobuz", f"{endpoint} → HTTP {resp.status_code}")
+        if resp.status_code == 404:
+            raise TrackNotFoundError("qobuz", endpoint)
         try:
             msg = resp.json().get("message", f"HTTP {resp.status_code}")
         except Exception:

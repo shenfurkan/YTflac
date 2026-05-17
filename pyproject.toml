@@ -8,7 +8,7 @@ version = "0.0.0-dev"
 description = "Get YouTube Music & Spotify tracks in true lossless FLAC from Tidal, Qobuz, Deezer & Amazon Music — no account required."
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"} # Mude para a sua licença real se não for MIT
+license = {text = "GPL-3.0-or-later"}
 authors = [
   { name="shenfurkan" }
 ]
@@ -24,7 +24,7 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Developers",
     "Topic :: Multimedia :: Sound/Audio",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -48,6 +48,9 @@ web = [
     "uvicorn[standard]>=0.32.0",
     "sse-starlette>=2.1.0",
 ]
+fluent = [
+    "PyQt6-Fluent-Widgets>=1.7.0",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/shenfurkan/YTflac"
@@ -55,7 +58,7 @@ web = [
 "Bug Tracker" = "https://github.com/shenfurkan/YTflac/issues"
 
 [project.scripts]
-ytflac = "ytflac.gui.app:run"
+ytflac = "ytflac.gui.main:run"
 
 [tool.setuptools.packages.find]
 include = ["ytflac*"]

@@ -1,6 +1,7 @@
 """
 In-memory job manager for SpotiFLAC download sessions.
 """
+
 from __future__ import annotations
 
 import threading
@@ -8,13 +9,14 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+import contextlib
 
 
 class JobState(str, Enum):
-    PENDING   = "pending"
-    RUNNING   = "running"
+    PENDING = "pending"
+    RUNNING = "running"
     COMPLETED = "completed"
-    FAILED    = "failed"
+    FAILED = "failed"
 
 
 @dataclass
@@ -50,11 +52,8 @@ class JobInfo:
             self._listeners.append(q)
 
     def remove_listener(self, q) -> None:
-        with self._lock:
-            try:
-                self._listeners.remove(q)
-            except ValueError:
-                pass
+        with self._lock, contextlib.suppress(ValueError):
+            self._listeners.remove(q)
 
 
 class JobManager:

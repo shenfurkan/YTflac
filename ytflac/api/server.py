@@ -2,6 +2,7 @@
 Thin FastAPI bridge exposing preview / download / progress for the MUI frontend.
 Run with:  uvicorn SpotiFLAC.api.server:app --reload --port 8787
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +35,11 @@ app = FastAPI(title="SpotiFLAC API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -108,12 +113,12 @@ def preview(req: PreviewRequest):
             unmatched = result.unmatched_samples
             coll_type = "playlist" if result.is_playlist else "track"
         except Exception as exc:
-            raise HTTPException(422, str(exc))
+            raise HTTPException(422, str(exc)) from exc
     else:
         try:
             collection_name, tracks = _spotify.get_url(url)
         except Exception as exc:
-            raise HTTPException(422, str(exc))
+            raise HTTPException(422, str(exc)) from exc
         if len(tracks) > 1:
             coll_type = "playlist"
 
@@ -158,12 +163,12 @@ def start_download(req: DownloadRequest):
             tracks = result.tracks
             is_playlist = result.is_playlist
         except Exception as exc:
-            raise HTTPException(422, str(exc))
+            raise HTTPException(422, str(exc)) from exc
     else:
         try:
             collection_name, tracks = _spotify.get_url(url)
         except Exception as exc:
-            raise HTTPException(422, str(exc))
+            raise HTTPException(422, str(exc)) from exc
         is_playlist = len(tracks) > 1
 
     if not tracks:
@@ -189,14 +194,15 @@ def start_download(req: DownloadRequest):
                 is_playlist=is_playlist,
             )
             keep_awake_enabled = is_playlist or len(tracks) > 1
-            with keep_awake(display=True) if keep_awake_enabled else contextlib.nullcontext():
+            with (
+                keep_awake(display=True)
+                if keep_awake_enabled
+                else contextlib.nullcontext()
+            ):
                 failed = worker.run()
             job.succeeded = len(tracks) - len(failed)
             job.failed = len(failed)
-            job.errors = [
-                {"title": t, "artist": a, "error": e}
-                for t, a, e in failed
-            ]
+            job.errors = [{"title": t, "artist": a, "error": e} for t, a, e in failed]
             job.current = len(tracks)
             job.state = JobState.COMPLETED
             job.push_event({"event": "done", "data": job.to_dict()})

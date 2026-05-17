@@ -6,12 +6,14 @@ logger = logging.getLogger(__name__)
 
 BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
+
 def spotify_id_to_gid(spotify_id: str) -> str:
     """Converte un ID Spotify Base62 in un GID esadecimale da 32 caratteri."""
     res = 0
     for char in spotify_id:
         res = res * 62 + BASE62.index(char)
     return f"{res:032x}"
+
 
 class IsrcFinder:
     """Ricerca ISRC tramite i mirror GID di Spotify."""

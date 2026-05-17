@@ -1,8 +1,8 @@
 import logging
-from typing import Dict
 from .http import HttpClient
 
 logger = logging.getLogger(__name__)
+
 
 class LinkResolver:
     """Risolve link tra piattaforme usando Odesli (Songlink)."""
@@ -12,13 +12,9 @@ class LinkResolver:
     def __init__(self, http_client: HttpClient):
         self.http = http_client
 
-    def resolve_all(self, spotify_id: str) -> Dict[str, str]:
+    def resolve_all(self, spotify_id: str) -> dict[str, str]:
         """Ritorna un dizionario con i link per ogni piattaforma."""
-        params = {
-            "id": spotify_id,
-            "platform": "spotify",
-            "userCountry": "US"
-        }
+        params = {"id": spotify_id, "platform": "spotify", "userCountry": "US"}
         links = {}
         try:
             data = self.http.get_json(self.API_URL, params=params)

@@ -2,6 +2,7 @@
 Spotify TOTP Generator — port di spotify_totp.go.
 Genera i codici temporanei necessari per l'autenticazione anonima ai mirror Spotify.
 """
+
 from __future__ import annotations
 import time
 import pyotp
@@ -10,10 +11,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Segreto e versione allineati alla versione Go
-_SPOTIFY_TOTP_SECRET = (
-    "GM3TMMJTGYZTQNZVGM4DINJZHA4TGOBYGMZTCMRTGEYDSMJRHE4TEOBUG4YTCMRUGQ4DQOJUGQYTAMRRGA2TCMJSHE3TCMBY"
-)
+_SPOTIFY_TOTP_SECRET = "GM3TMMJTGYZTQNZVGM4DINJZHA4TGOBYGMZTCMRTGEYDSMJRHE4TEOBUG4YTCMRUGQ4DQOJUGQYTAMRRGA2TCMJSHE3TCMBY"
 _SPOTIFY_TOTP_VERSION = 61
+
 
 def generate_spotify_totp(timestamp: float | None = None) -> tuple[str, int]:
     """
@@ -38,6 +38,7 @@ def generate_spotify_totp(timestamp: float | None = None) -> tuple[str, int]:
         logger.error("[spotify_totp] Errore nella generazione del codice: %s", e)
         # Ritorna un valore vuoto o gestibile in caso di errore critico
         return "", _SPOTIFY_TOTP_VERSION
+
 
 if __name__ == "__main__":
     # Test veloce

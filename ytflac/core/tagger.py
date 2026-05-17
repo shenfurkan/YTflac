@@ -8,6 +8,7 @@ FIX v2:
   - Aggiunto ARTISTS/ALBUMARTISTS come tag multi-valore separato
     per editor avanzati che li supportano (MusicBrainz Picard standard)
 """
+
 from __future__ import annotations
 import logging
 from pathlib import Path
@@ -23,10 +24,25 @@ logger = logging.getLogger(__name__)
 
 SOURCE_TAG = "https://github.com/ShuShuzinhuu/SpotiFLAC-Module-Version"
 
+# Reusable session for cover-art downloads — shares TCP connection pool.
+_cover_session: requests.Session | None = None
+
+
+def _get_cover_session() -> requests.Session:
+    """Return (or lazily create) the module-level cover-art HTTP session."""
+    global _cover_session
+    if _cover_session is None:
+        _cover_session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=4)
+        _cover_session.mount("https://", adapter)
+        _cover_session.mount("http://", adapter)
+    return _cover_session
+
 
 # ---------------------------------------------------------------------------
 # MusicBrainz summary helper
 # ---------------------------------------------------------------------------
+
 
 def _print_mb_summary(mb_tags: dict) -> None:
     """
@@ -38,24 +54,38 @@ def _print_mb_summary(mb_tags: dict) -> None:
 
     # Mappatura unificata sia per i tag FLAC (UPPERCASE) sia per i dizionari raw (lowercase)
     _TAG_LABELS = {
-        "GENRE": "genere", "genre": "genere",
-        "BPM": "BPM", "bpm": "BPM",
-        "LABEL": "etichetta", "label": "etichetta",
-        "CATALOGNUMBER": "n. catalogo", "catalognumber": "n. catalogo",
-        "BARCODE": "barcode", "barcode": "barcode",
-        "ORIGINALDATE": "data", "original_date": "data",
-        "RELEASECOUNTRY": "paese", "country": "paese",
-        "RELEASESTATUS": "stato release", "status": "stato release",
-        "MEDIA": "supporto", "media": "supporto",
-        "RELEASETYPE": "tipo release", "type": "tipo release",
-        "ARTISTSORT": "artista (sort)", "artist_sort": "artista (sort)",
-        "ALBUMARTISTSORT": "artista album (sort)", "albumartist_sort": "artista album (sort)",
-        "SCRIPT": "scrittura", "script": "scrittura",
+        "GENRE": "genere",
+        "genre": "genere",
+        "BPM": "BPM",
+        "bpm": "BPM",
+        "LABEL": "etichetta",
+        "label": "etichetta",
+        "CATALOGNUMBER": "n. catalogo",
+        "catalognumber": "n. catalogo",
+        "BARCODE": "barcode",
+        "barcode": "barcode",
+        "ORIGINALDATE": "data",
+        "original_date": "data",
+        "RELEASECOUNTRY": "paese",
+        "country": "paese",
+        "RELEASESTATUS": "stato release",
+        "status": "stato release",
+        "MEDIA": "supporto",
+        "media": "supporto",
+        "RELEASETYPE": "tipo release",
+        "type": "tipo release",
+        "ARTISTSORT": "artista (sort)",
+        "artist_sort": "artista (sort)",
+        "ALBUMARTISTSORT": "artista album (sort)",
+        "albumartist_sort": "artista album (sort)",
+        "SCRIPT": "scrittura",
+        "script": "scrittura",
     }
 
     # Raggruppa tutti gli ID per mostrarli in un unico conteggio finale
     mb_ids = {
-        k: v for k, v in mb_tags.items()
+        k: v
+        for k, v in mb_tags.items()
         if str(k).startswith("MUSICBRAINZ_") or str(k).startswith("mbid_")
     }
 
@@ -64,7 +94,8 @@ def _print_mb_summary(mb_tags: dict) -> None:
 
     # Selezioniamo solo i campi che hanno effettivamente un valore e non sono ID o duplicati
     important = {
-        k: v for k, v in mb_tags.items()
+        k: v
+        for k, v in mb_tags.items()
         if k not in mb_ids and k not in skip_dupes and v
     }
 
@@ -86,24 +117,25 @@ def _print_mb_summary(mb_tags: dict) -> None:
 # Main embed function
 # ---------------------------------------------------------------------------
 
+
 def embed_metadata(
-        filepath:          str | Path,
-        metadata:          TrackMetadata,
-        *,
-        first_artist_only: bool  = False,
-        cover_url:         str   = "",
-        cover_data:        bytes | None = None,
-        session:           requests.Session | None = None,
-        extra_tags:        dict[str, str] | None = None,
-        multi_artist:      bool  = True,
-        # Lyrics options
-        embed_lyrics:         bool = False,
-        lyrics_providers:     list[str] | None = None,
-        lyrics_spotify_token: str = "",
-        # Metadata enrichment options
-        enrich:           bool = False,
-        enrich_providers: list[str] | None = None,
-        enrich_qobuz_token: str  = "",
+    filepath: str | Path,
+    metadata: TrackMetadata,
+    *,
+    first_artist_only: bool = False,
+    cover_url: str = "",
+    cover_data: bytes | None = None,
+    session: requests.Session | None = None,
+    extra_tags: dict[str, str] | None = None,
+    multi_artist: bool = True,
+    # Lyrics options
+    embed_lyrics: bool = False,
+    lyrics_providers: list[str] | None = None,
+    lyrics_spotify_token: str = "",
+    # Metadata enrichment options
+    enrich: bool = False,
+    enrich_providers: list[str] | None = None,
+    enrich_qobuz_token: str = "",
 ) -> None:
     path = Path(filepath)
     if not path.exists():
@@ -114,18 +146,20 @@ def embed_metadata(
     # ------------------------------------------------------------------ #
     enriched_tags: dict[str, str] = {}
     enriched_cover_url: str = ""
+    used_cover_url: str = ""
 
     if enrich:
         try:
             from .metadata_enrichment import enrich_metadata as _enrich
+
             enriched = _enrich(
-                track_name  = metadata.title,
-                artist_name = metadata.first_artist,
-                isrc        = metadata.isrc,
-                providers   = enrich_providers,
-                qobuz_token = enrich_qobuz_token,
+                track_name=metadata.title,
+                artist_name=metadata.first_artist,
+                isrc=metadata.isrc,
+                providers=enrich_providers,
+                qobuz_token=enrich_qobuz_token,
             )
-            enriched_tags      = enriched.as_tags()
+            enriched_tags = enriched.as_tags()
             enriched_cover_url = enriched.cover_url_hd
             if enriched._sources:
                 nomi_campi = {"cover_url_hd": "cover", "explicit": "advisory"}
@@ -144,7 +178,20 @@ def embed_metadata(
     if not cover_data:
         best_cover = enriched_cover_url or cover_url or metadata.cover_url
         if best_cover:
-            cover_data = _fetch_cover(best_cover, session)
+            cover_candidates = [max_resolution_spotify_cover(best_cover), best_cover]
+            seen: set[str] = set()
+            for candidate in cover_candidates:
+                if not candidate or candidate in seen:
+                    continue
+                seen.add(candidate)
+                cover_data = _fetch_cover(candidate, session)
+                if cover_data:
+                    used_cover_url = candidate
+                    break
+    elif cover_url:
+        used_cover_url = cover_url
+    elif metadata.cover_url:
+        used_cover_url = metadata.cover_url
 
     # ------------------------------------------------------------------ #
     # 3. Lyrics                                                            #
@@ -155,15 +202,16 @@ def embed_metadata(
     if embed_lyrics and metadata.title and metadata.first_artist:
         try:
             from .lyrics import fetch_lyrics
+
             res = fetch_lyrics(
-                track_name       = metadata.title,
-                artist_name      = metadata.first_artist,
-                album_name       = metadata.album,
-                duration_s       = metadata.duration_ms // 1000,
-                track_id         = metadata.id,
-                isrc             = metadata.isrc,
-                providers        = lyrics_providers,
-                spotify_token    = lyrics_spotify_token,
+                track_name=metadata.title,
+                artist_name=metadata.first_artist,
+                album_name=metadata.album,
+                duration_s=metadata.duration_ms // 1000,
+                track_id=metadata.id,
+                isrc=metadata.isrc,
+                providers=lyrics_providers,
+                spotify_token=lyrics_spotify_token,
             )
             # Supportiamo sia la nuova tupla (lyrics, provider) sia la vecchia stringa
             if isinstance(res, tuple):
@@ -172,7 +220,6 @@ def embed_metadata(
                 lyrics = res
         except Exception as exc:
             logger.warning("[tagger] lyrics fetch failed: %s", exc)
-
 
     # ------------------------------------------------------------------ #
     # 4. Write FLAC tags                                                   #
@@ -208,13 +255,21 @@ def embed_metadata(
             if metadata.copyright:
                 merged_extra.pop("COPYRIGHT", None)
                 merged_extra.pop("copyright", None)
-            orig_date = merged_extra.get("original_date") or merged_extra.get("ORIGINALDATE")
+            orig_date = merged_extra.get("original_date") or merged_extra.get(
+                "ORIGINALDATE"
+            )
             if orig_date:
                 tags["ORIGINALDATE"] = str(orig_date)
                 tags["ORIGINALYEAR"] = str(orig_date)[:4]
 
-            _date_keys = {"ORIGINAL_DATE", "ORIGINAL_YEAR", "ORIGINALDATE", "ORIGINALYEAR",
-                          "original_date", "original_year"}
+            _date_keys = {
+                "ORIGINAL_DATE",
+                "ORIGINAL_YEAR",
+                "ORIGINALDATE",
+                "ORIGINALYEAR",
+                "original_date",
+                "original_year",
+            }
 
             for key, val in merged_extra.items():
                 if key not in _date_keys and key.upper() not in _date_keys:
@@ -239,10 +294,10 @@ def embed_metadata(
                 audio[key] = val
 
         if cover_data:
-            pic          = Picture()
-            pic.data     = cover_data
-            pic.type     = PictureType.COVER_FRONT
-            pic.mime     = "image/jpeg"
+            pic = Picture()
+            pic.data = cover_data
+            pic.type = PictureType.COVER_FRONT
+            pic.mime = _detect_cover_mime(cover_data, used_cover_url)
             audio.add_picture(pic)
 
         audio.save()
@@ -255,13 +310,14 @@ def embed_metadata(
             ErrorKind.FILE_IO,
             f"Failed to embed metadata in {path.name}: {exc}",
             cause=exc,
-        )
+        ) from exc
+
 
 def _fetch_cover(url: str, session: requests.Session | None) -> bytes | None:
     if not url:
         return None
     try:
-        s   = session or requests.Session()
+        s = session or _get_cover_session()
         res = s.get(url, timeout=8)
         if res.status_code == 200:
             return res.content
@@ -270,9 +326,21 @@ def _fetch_cover(url: str, session: requests.Session | None) -> bytes | None:
         logger.warning("[tagger] cover download failed (%s): %s", url, exc)
     return None
 
+
+def _detect_cover_mime(data: bytes, source_url: str = "") -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if source_url.lower().endswith(".png"):
+        return "image/png"
+    return "image/jpeg"
+
+
 def max_resolution_spotify_cover(url: str) -> str:
     """Converte URL immagine Spotify alla variante massima risoluzione."""
     import re
+
     if "i.scdn.co/image/" in url:
         return re.sub(r"(ab67616d0000)[a-z0-9]+", r"\g<1>b273", url)
     return url

@@ -2,6 +2,7 @@
 """
 Port di download_validation.go — rileva preview da 30s e mismatch di durata.
 """
+
 from __future__ import annotations
 import logging
 import os
@@ -9,22 +10,31 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-_PREVIEW_MAX_SECONDS      = 35
-_PREVIEW_EXPECTED_MIN     = 60
-_LARGE_MISMATCH_MIN       = 90
-_MIN_ALLOWED_DIFF         = 15
-_DURATION_DIFF_RATIO      = 0.25
+_PREVIEW_MAX_SECONDS = 35
+_PREVIEW_EXPECTED_MIN = 60
+_LARGE_MISMATCH_MIN = 90
+_MIN_ALLOWED_DIFF = 15
+_DURATION_DIFF_RATIO = 0.25
 
 
 def _get_audio_duration(filepath: str) -> float:
     """Usa ffprobe per ottenere la durata in secondi."""
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_format", filepath],
-            capture_output=True, text=True,
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                filepath,
+            ],
+            capture_output=True,
+            text=True,
         )
         import json
+
         data = json.loads(result.stdout)
         return float(data.get("format", {}).get("duration", 0))
     except Exception:
@@ -32,7 +42,7 @@ def _get_audio_duration(filepath: str) -> float:
 
 
 def validate_downloaded_track(
-    filepath:         str,
+    filepath: str,
     expected_seconds: int,
 ) -> tuple[bool, str]:
     """
@@ -60,8 +70,7 @@ def validate_downloaded_track(
 
     # Case 2: large mismatch on long tracks
     if expected_seconds >= _LARGE_MISMATCH_MIN:
-        allowed = max(_MIN_ALLOWED_DIFF,
-                      round(expected_seconds * _DURATION_DIFF_RATIO))
+        allowed = max(_MIN_ALLOWED_DIFF, round(expected_seconds * _DURATION_DIFF_RATIO))
         diff = abs(actual_s - expected_seconds)
         if diff > allowed:
             msg = (
